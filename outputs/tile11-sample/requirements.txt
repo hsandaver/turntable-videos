@@ -1,0 +1,5 @@
+numpy>=2.0
+moderngl>=5.8
+Pillow>=9.1
+imageio-ffmpeg>=0.5
+streamlit>=1.50  # only needed for app.py

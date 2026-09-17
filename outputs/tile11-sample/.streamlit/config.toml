@@ -1,0 +1,19 @@
+[theme]
+base = "light"
+primaryColor = "#A34A28"
+backgroundColor = "#FBFAF7"
+secondaryBackgroundColor = "#F2EEE7"
+textColor = "#2A2521"
+borderColor = "#E3DDD2"
+dataframeBorderColor = "#E3DDD2"
+baseRadius = "0.5rem"
+showWidgetBorder = true
+
+[server]
+showEmailPrompt = false
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

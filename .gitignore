@@ -1,0 +1,21 @@
+# Environments and caches
+.venv/
+__pycache__/
+node_modules
+.DS_Store
+*.partial
+
+# Kept local, not published: third-party model data, renders and the ABP spreadsheet work
+outputs/tile11-sample/source/
+outputs/tile11-sample/frames/
+*.wmv
+outputs/abp-urls/
+~$*
+/edit.mjs
+/filename-matches.json
+/filenames.mjs
+/filenames.py
+/fix-links.mjs
+/mapping.txt
+/preserve-filenames.py
+/preserve.py
