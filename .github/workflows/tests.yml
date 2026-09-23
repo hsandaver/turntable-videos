@@ -1,0 +1,22 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  headless-render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install graphics libraries
+        run: |
+          sudo apt-get update
+          xargs -a packages.txt sudo apt-get install -y
+      - name: Install Python dependencies
+        run: pip install -r outputs/tile11-sample/requirements.txt
+      - name: Test uploads and headless rendering
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: python -m unittest discover -s outputs/tile11-sample -p 'test_*.py'

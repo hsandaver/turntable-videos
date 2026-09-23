@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from ctypes.util import find_library
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -212,11 +213,15 @@ def rotation_y(angle):
 
 
 def create_context():
-    try:
-        return moderngl.create_standalone_context(require=330)
-    except Exception:
-        # Headless Linux has no X display, so fall back to EGL
-        return moderngl.create_standalone_context(require=330, backend="egl")
+    if sys.platform.startswith("linux"):
+        # EGL works without a display server. Runtime packages provide the .so.1
+        # libraries; the unversioned .so links require development packages.
+        return moderngl.create_standalone_context(
+            require=330, backend="egl",
+            libgl=find_library("GL") or "libGL.so.1",
+            libegl=find_library("EGL") or "libEGL.so.1",
+        )
+    return moderngl.create_standalone_context(require=330)
 
 
 class Renderer:

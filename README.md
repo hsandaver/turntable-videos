@@ -75,7 +75,7 @@ Videos are written under a temporary name and renamed when finished, so a cancel
 
 ## Streamlit Community Cloud
 
-Deploy `outputs/tile11-sample/app.py` with Python 3.12 or 3.13. The adjacent `requirements.txt` installs the Python dependencies, and `packages.txt` installs the Linux graphics libraries for headless rendering with EGL. Community Cloud installs these dependency files when you deploy updates. See [Streamlit's dependency documentation](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
+Deploy `outputs/tile11-sample/app.py` with Python 3.12 or 3.13. The adjacent `requirements.txt` installs the Python dependencies. The `packages.txt` at the repository root installs the Linux graphics libraries for headless rendering with EGL. Community Cloud requires this file at the root, even when the app is in a subdirectory. See [Streamlit's dependency documentation](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
 
 The default interface uses browser uploads and downloads, so no tkinter or desktop file dialog is needed. Each browser session has its own job and temporary workspace. Uploaded originals on your computer stay unchanged.
 
