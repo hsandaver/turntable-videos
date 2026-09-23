@@ -4,7 +4,7 @@ Makes WMV turntable videos of the 3D models in [Pedestal 3D](https://unimelb.ped
 
 Each ZIP gets a 15-second, 1920×1080 video of its model making one full turn. The video takes the ZIP's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for a WMV with that name when it builds a ZIP's preview, and the app can put the video inside the ZIP for you.
 
-It runs on Windows, macOS and Linux, on your own computer. There's a Streamlit app and a command-line script, and both live in `outputs/tile11-sample/`.
+It runs on Windows, macOS and Linux, or on Streamlit Community Cloud. There's a Streamlit app and a command-line script, and both live in `outputs/tile11-sample/`.
 
 ## Setup
 
@@ -40,15 +40,16 @@ streamlit run app.py
 
 It opens in your browser.
 
-1. Click **Choose ZIP files…** or **Choose a folder…**. The app lists each ZIP with an `.obj` model inside and shows whether it already has a video. **Type a path** works too, if your system can't open a file dialog.
-2. Choose where to save the videos, and switch on **Put each video inside its ZIP** if they're going into Acquia DAM.
+1. Upload your ZIP files. The app lists each ZIP with an `.obj` model inside and shows whether it already has a video.
+2. Switch on **Put each video inside its ZIP** if they're going into Acquia DAM.
 3. Tick the ZIPs you want. ZIPs that still need a video are ticked already.
 4. Click **Preview** to see each model from four sides before you render. Check that it's upright and textured.
 5. Click **Make videos**. A progress bar shows how far along it is, and you can cancel.
+6. Download the finished WMVs and, if requested, the ZIPs containing them. Keep the tab open while rendering. Files are temporary and belong to your browser session, so download them before refreshing or leaving the page.
 
 Browsers can't play WMV, and neither can QuickTime. To watch a finished video, use [VLC](https://www.videolan.org/) or, on a Mac, [IINA](https://iina.io/).
 
-On Linux, the file dialogs need `zenity`, `kdialog` or Python's tkinter.
+To work directly with files on your own computer, set `TURNTABLE_LOCAL_FILES=1` before starting Streamlit, then choose **Local files**. This enables the native file and folder pickers, **Type a path**, and output folder settings. On macOS or Linux, run `TURNTABLE_LOCAL_FILES=1 streamlit run app.py`. In PowerShell, set `$env:TURNTABLE_LOCAL_FILES = "1"` and then run `streamlit run app.py`. On Linux, the file dialogs need `zenity`, `kdialog` or Python's tkinter. Leave this option disabled on hosted servers.
 
 ## The command line
 
@@ -72,9 +73,13 @@ Videos are written under a temporary name and renamed when finished, so a cancel
 
 `render.swift` is an earlier macOS-only version using SceneKit. It compiles, but it renders models without their textures.
 
-## Why it doesn't run on Streamlit Community Cloud
+## Streamlit Community Cloud
 
-The app expects to run on the same computer as your ZIP files. On a hosted server, the file dialogs would open on the server, the videos would be saved to the server's disk, and rendering would fall back to slow software OpenGL. Run it locally instead.
+Deploy `outputs/tile11-sample/app.py` with Python 3.12 or 3.13. The adjacent `requirements.txt` installs the Python dependencies, and `packages.txt` installs the Linux graphics libraries for headless rendering with EGL. Community Cloud installs these dependency files when you deploy updates. See [Streamlit's dependency documentation](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
+
+The default interface uses browser uploads and downloads, so no tkinter or desktop file dialog is needed. Each browser session has its own job and temporary workspace. Uploaded originals on your computer stay unchanged.
+
+Cloud rendering uses software OpenGL and can be slow or run out of memory with large models. Start with one ZIP and use **Preview** before making a video. Streamlit's default upload limit is 200 MB per file. To change it on Community Cloud, set `[server]` and `maxUploadSize` in a `.streamlit/config.toml` at the repository root. Larger uploads also need more memory during model loading and downloads.
 
 ## Models
 

@@ -5,6 +5,7 @@
 
 The rendering itself lives in render.py, which also works on its own from the command line.
 """
+import os
 import sys
 import threading
 import time
@@ -21,8 +22,10 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import file_dialog  # noqa: E402
 import render  # noqa: E402
+from uploads import UploadWorkspace  # noqa: E402
 
 PREVIEW_SIZE = 360  # pixels per view in the preview strips
+LOCAL_FILES = os.environ.get("TURNTABLE_LOCAL_FILES") == "1"
 
 
 class Cancelled(Exception):
@@ -37,6 +40,8 @@ class Job:
     zips: list
     out_dir: Path | None = None
     add_to_zip: bool = False
+    workspace: UploadWorkspace | None = None  # keep temporary files alive during background work
+    downloads: list = field(default_factory=list)
     done: int = 0
     current: str = ""
     stage: str = ""
@@ -50,10 +55,11 @@ class Job:
     cancel: threading.Event = field(default_factory=threading.Event)
 
 
-@st.cache_resource
-def shared():
-    """Holds the running or most recent job. It's shared across sessions, so a browser refresh finds a running job again."""
-    return {"job": None}
+def session():
+    """Keep jobs and uploads private to this browser session."""
+    if "work" not in st.session_state:
+        st.session_state.work = {"job": None, "workspace": UploadWorkspace()}
+    return st.session_state.work
 
 
 # Background work. Nothing here calls st.*, because Streamlit commands only work on the page's own thread.
@@ -130,16 +136,20 @@ def render_zip(renderer, zip_path, job):
     job.stage = "Rendering"
     render.encode(renderer, video, on_frame)
 
-    saved = f"Saved {video.name} " + ("next to the ZIP" if job.out_dir is None else f"in {job.out_dir}")
+    saved = f"Ready to download: {video.name}" if job.workspace else (
+        f"Saved {video.name} " + ("next to the ZIP" if job.out_dir is None else f"in {job.out_dir}")
+    )
+    job.downloads.append(video)
     if job.add_to_zip:
         job.stage = "Adding the video to the ZIP"
         render.add_to_zip(zip_path, video)
+        job.downloads.append(zip_path)
         saved += " and added it to the ZIP"
     job.results.append((zip_path.name, "Done", saved))
 
 
 def start(job):
-    shared()["job"] = job
+    session()["job"] = job
     threading.Thread(target=run_job, args=(job,), daemon=True).start()
     st.rerun()
 
@@ -215,7 +225,7 @@ def use_typed_path():
 
 st.set_page_config(page_title="Turntable videos", page_icon=":material/3d_rotation:", layout="wide")
 
-job = shared()["job"]
+job = session()["job"]
 running = job is not None and not job.finished
 
 with st.sidebar:
@@ -228,7 +238,7 @@ The video takes the ZIP's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM 
 
 If a ZIP holds several `.obj` files, the app renders the largest one that has a material file. That's usually the high-detail copy.
 
-Putting videos inside ZIPs changes the ZIP files themselves. The app writes a copy and swaps it in at the end, so a cancelled or crashed run can't damage a ZIP.
+For uploads, videos are added to a temporary copy that you can download. In local file mode, putting videos inside ZIPs changes the ZIP files themselves. The app writes a copy and swaps it in at the end, so a cancelled or crashed run can't damage a ZIP.
 
 Browsers can't play WMV. Use **Preview** to check a model before rendering, and VLC or IINA to watch the finished video.
 """
@@ -237,45 +247,56 @@ Browsers can't play WMV. Use **Preview** to check a model before rendering, and 
 st.title(":material/3d_rotation: Turntable videos")
 st.caption("Make WMV turntable videos of the 3D models in Pedestal 3D ZIP downloads, ready for Acquia DAM.")
 
-if "source" not in st.session_state:
-    downloads = Path.home() / "Downloads"
-    st.session_state.source = [downloads if downloads.is_dir() else Path.home()]
-
-st.markdown("**ZIP files**")
-source_bar = st.container(horizontal=True, vertical_alignment="center")
-source_bar.button("Choose ZIP files…", icon=":material/folder_zip:", on_click=choose, args=("files",), disabled=running)
-source_bar.button("Choose a folder…", icon=":material/folder_open:", on_click=choose, args=("folder",), disabled=running)
-with source_bar.popover("Type a path", icon=":material/keyboard:", disabled=running):
-    st.text_input(
-        "Folder or ZIP file",
-        key="typed_path",
-        placeholder=str(Path.home() / "Downloads"),
-        on_change=use_typed_path,
-        help="Press Enter to use it.",
-    )
-source_bar.button("Refresh", icon=":material/refresh:", type="tertiary", disabled=running)
-
-if error := st.session_state.pop("dialog_error", None):
-    st.error(f"Couldn't open a file dialog ({error}). Use **Type a path** instead.", icon=":material/error:")
-
-source = st.session_state.source
-missing = [path for path in source if not path.exists()]
-source = [path for path in source if path.exists()]
-if len(source) == 1 and source[0].is_dir():
-    st.markdown(f":material/folder: Every ZIP in `{source[0]}`")
-elif len(source) == 1:
-    st.markdown(f":material/folder_zip: `{source[0]}`")
-elif source:
-    st.markdown(f":material/folder_zip: {len(source)} ZIP files you chose")
-for path in missing:
-    st.warning(f"Can't find {path}", icon=":material/folder_off:")
-
-where_col, out_col, zip_col = st.columns([2, 3, 2], vertical_alignment="bottom")
-where = where_col.radio("Save videos", ["Next to each ZIP", "In another folder"], horizontal=True, disabled=running)
+input_mode = "Upload ZIP files"
+if LOCAL_FILES:
+    input_mode = st.radio("ZIP source", ["Upload ZIP files", "Local files"], horizontal=True, disabled=running)
+uploading = input_mode == "Upload ZIP files"
 out_dir = None
-if where == "In another folder":
-    default_out = start_dir(source) / "Turntable videos" if source else Path.home() / "Turntable videos"
-    out_dir = Path(out_col.text_input("Output folder", value=str(default_out), disabled=running).strip()).expanduser()
+if uploading:
+    uploaded = st.file_uploader("Upload ZIP files", type=["zip"], accept_multiple_files=True, disabled=running)
+    source = list(dict.fromkeys(session()["workspace"].save(item) for item in uploaded))
+    st.caption("Download the finished videos and updated ZIPs below. Keep this tab open while rendering and download your files before leaving.")
+    zip_col = st.container()
+else:
+    if "source" not in st.session_state:
+        downloads = Path.home() / "Downloads"
+        st.session_state.source = [downloads if downloads.is_dir() else Path.home()]
+
+    st.markdown("**ZIP files**")
+    source_bar = st.container(horizontal=True, vertical_alignment="center")
+    source_bar.button("Choose ZIP files…", icon=":material/folder_zip:", on_click=choose, args=("files",), disabled=running)
+    source_bar.button("Choose a folder…", icon=":material/folder_open:", on_click=choose, args=("folder",), disabled=running)
+    with source_bar.popover("Type a path", icon=":material/keyboard:", disabled=running):
+        st.text_input(
+            "Folder or ZIP file",
+            key="typed_path",
+            placeholder=str(Path.home() / "Downloads"),
+            on_change=use_typed_path,
+            help="Press Enter to use it.",
+        )
+    source_bar.button("Refresh", icon=":material/refresh:", type="tertiary", disabled=running)
+
+    if error := st.session_state.pop("dialog_error", None):
+        st.error(f"Couldn't open a file dialog ({error}). Use **Upload ZIP files** instead.", icon=":material/error:")
+
+    source = st.session_state.source
+    missing = [path for path in source if not path.exists()]
+    source = [path for path in source if path.exists()]
+    if len(source) == 1 and source[0].is_dir():
+        st.markdown(f":material/folder: Every ZIP in `{source[0]}`")
+    elif len(source) == 1:
+        st.markdown(f":material/folder_zip: `{source[0]}`")
+    elif source:
+        st.markdown(f":material/folder_zip: {len(source)} ZIP files you chose")
+    for path in missing:
+        st.warning(f"Can't find {path}", icon=":material/folder_off:")
+
+    where_col, out_col, zip_col = st.columns([2, 3, 2], vertical_alignment="bottom")
+    where = where_col.radio("Save videos", ["Next to each ZIP", "In another folder"], horizontal=True, disabled=running)
+    out_dir = None
+    if where == "In another folder":
+        default_out = start_dir(source) / "Turntable videos" if source else Path.home() / "Turntable videos"
+        out_dir = Path(out_col.text_input("Output folder", value=str(default_out), disabled=running).strip()).expanduser()
 add_to_zip = zip_col.toggle(
     "Put each video inside its ZIP",
     disabled=running,
@@ -288,7 +309,7 @@ rows, without_model = scan(source, out_dir, add_to_zip) if source else ([], 0)
 selected = []
 
 if not source:
-    st.info("Choose some ZIP files or a folder to get started.", icon=":material/folder_zip:")
+    st.info("Upload some ZIP files to get started." if uploading else "Choose some ZIP files or a folder to get started.", icon=":material/folder_zip:")
 elif not rows:
     st.info("None of these ZIP files has an .obj model inside.", icon=":material/inventory_2:")
 else:
@@ -314,7 +335,7 @@ else:
             st.session_state.table_version += 1
 
     # Only show where each ZIP lives when they come from more than one folder
-    columns = ["ZIP", "Folder", "Model", "Size", "Video"] if len({row["Folder"] for row in rows}) > 1 else ["ZIP", "Model", "Size", "Video"]
+    columns = ["ZIP", "Folder", "Model", "Size", "Video"] if not uploading and len({row["Folder"] for row in rows}) > 1 else ["ZIP", "Model", "Size", "Video"]
     table = pd.DataFrame(
         [{"Include": st.session_state.ticks.get(str(row["path"]), False), **{k: row[k] for k in columns}} for row in rows]
     )
@@ -340,14 +361,15 @@ else:
     actions = st.container(horizontal=True)
     plural = "s" if len(selected) != 1 else ""
     if actions.button(f"Preview {len(selected)} model{plural}", icon=":material/visibility:", disabled=running or not selected):
-        start(Job("preview", selected))
+        start(Job("preview", selected, workspace=session()["workspace"] if uploading else None))
     if actions.button(
         f"Make {len(selected)} video{plural}",
         type="primary",
         icon=":material/movie:",
         disabled=running or not selected or (out_dir is not None and not str(out_dir).strip()),
     ):
-        start(Job("render", selected, out_dir=out_dir, add_to_zip=add_to_zip))
+        start(Job("render", selected, out_dir=out_dir, add_to_zip=add_to_zip,
+                  workspace=session()["workspace"] if uploading else None))
 
 
 @st.fragment(run_every=0.5)
@@ -381,7 +403,7 @@ def show_results(job):
     header, dismiss = st.columns([5, 1], vertical_alignment="center")
     header.subheader("Previews" if job.kind == "preview" else "Results")
     if dismiss.button("Clear", icon=":material/close:", type="tertiary", width="stretch"):
-        shared()["job"] = None
+        session()["job"] = None
         st.rerun()
 
     if job.error:
@@ -406,6 +428,13 @@ def show_results(job):
         st.dataframe(pd.DataFrame(job.results, columns=["ZIP file", "Result", "Detail"]), hide_index=True)
     elif problems:
         st.dataframe(pd.DataFrame(problems, columns=["ZIP file", "Result", "Detail"]), hide_index=True)
+
+    if job.workspace and job.downloads:
+        for i, path in enumerate(job.downloads):
+            mime = "application/zip" if path.suffix.lower() == ".zip" else "video/x-ms-wmv"
+            with path.open("rb") as data:
+                st.download_button(f"Download {path.name}", data, file_name=path.name,
+                                   mime=mime, key=f"download-{i}", on_click="ignore")
 
     if job.previews:
         st.caption("Each model from the front, then turned a quarter at a time. Check that it's upright and textured before making its video.")
