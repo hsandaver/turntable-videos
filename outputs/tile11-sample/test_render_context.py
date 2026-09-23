@@ -38,7 +38,6 @@ class ContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, \
                 patch.multiple(render, WIDTH=192, HEIGHT=108, FRAMES=4):
             source = Path(folder) / "triangle.zip"
-            video = source.with_suffix(".wmv")
             with zipfile.ZipFile(source, "w") as archive:
                 archive.writestr("triangle.obj", "v -1 -1 0\nv 1 -1 0\nv 0 1 0\nf 1 2 3\n")
             renderer = render.Renderer()
@@ -48,11 +47,13 @@ class ContextTests(unittest.TestCase):
                 frame = renderer.frame(0)
                 self.assertEqual(frame.shape, (108, 192, 3))
                 self.assertTrue((frame != frame[0, 0]).any(), "Preview contains only the background")
-                render.encode(renderer, video)
-                self.assertGreater(video.stat().st_size, 0)
-                render.add_to_zip(source, video)
-                with zipfile.ZipFile(source) as archive:
-                    self.assertEqual(archive.read(video.name), video.read_bytes())
+                for extension in (".wmv", ".mp4"):
+                    video = source.with_suffix(extension)
+                    render.encode(renderer, video)
+                    self.assertGreater(video.stat().st_size, 0)
+                    render.add_to_zip(source, video)
+                    with zipfile.ZipFile(source) as archive:
+                        self.assertEqual(archive.read(video.name), video.read_bytes())
             finally:
                 renderer.release()
 

@@ -1,15 +1,16 @@
-"""Render turntable videos (.wmv) of the 3D models in Pedestal 3D ZIP downloads.
+"""Render turntable videos (.wmv or .mp4) of models in Pedestal 3D ZIP downloads.
 
-Each ZIP gets a 15-second 1920x1080 WMV of its model making one full turn. The
-video takes the ZIP's name ("Tile 11.zip" becomes "Tile 11.wmv"), which is the
-name Acquia DAM looks for when it builds a preview for a ZIP.
+Each ZIP gets a 15-second 1920x1080 video of its model making one full turn.
+WMV is the default for Acquia DAM previews; MP4 is also available. Videos take
+the ZIP's name ("Tile 11.zip" becomes "Tile 11.wmv" or "Tile 11.mp4").
 
 Works on Windows, macOS and Linux. Rendering uses OpenGL through moderngl, and
-the WMV encoder is the ffmpeg binary that ships inside imageio-ffmpeg.
+the encoder is the ffmpeg binary that ships inside imageio-ffmpeg.
 
     pip install -r requirements.txt
     python render.py "Tile 11.zip"                # writes "Tile 11.wmv" next to the ZIP
     python render.py path/to/folder               # every ZIP in the folder
+    python render.py --format mp4 path/to/folder   # MP4 instead of WMV; use both for both formats
     python render.py --preview path/to/folder     # one still per ZIP (.png), to check before rendering
     python render.py --add-to-zip path/to/folder  # also put each video inside its ZIP
 """
@@ -277,12 +278,19 @@ def encode(renderer, video, on_frame=None):
     The video is written under a temporary name and renamed at the end, so stopping early never leaves a
     half-written video behind or destroys one from an earlier run.
     """
+    if video.suffix.lower() == ".wmv":
+        output_args = ["-c:v", "wmv2", "-b:v", "12M", "-pix_fmt", "yuv420p", "-f", "asf"]
+    elif video.suffix.lower() == ".mp4":
+        output_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                       "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4"]
+    else:
+        raise ValueError(f"Unsupported video format: {video.suffix}")
     partial = video.with_name(video.name + ".partial")
     encoder = subprocess.Popen(
         [
             imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{WIDTH}x{HEIGHT}", "-r", str(FPS), "-i", "-",
-            "-c:v", "wmv2", "-b:v", "12M", "-pix_fmt", "yuv420p", "-f", "asf", str(partial),
+            *output_args, str(partial),
         ],
         stdin=subprocess.PIPE,
     )
@@ -309,20 +317,28 @@ def add_to_zip(zip_path, video):
     partial = zip_path.with_name(zip_path.name + ".partial")
     shutil.copyfile(zip_path, partial)
     with zipfile.ZipFile(partial, "a") as zf:
-        zf.write(video, video.name, compress_type=zipfile.ZIP_STORED)  # WMV is already compressed
+        zf.write(video, video.name, compress_type=zipfile.ZIP_STORED)  # Video is already compressed
     os.replace(partial, zip_path)
+
+
+def video_formats(choice):
+    return ("wmv", "mp4") if choice == "both" else (choice,)
 
 
 def process(renderer, zip_path, args):
     started = time.time()
     out_dir = Path(args.out) if args.out else zip_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    video = out_dir / f"{zip_path.stem}.wmv"
+    videos = [out_dir / f"{zip_path.stem}.{fmt}" for fmt in video_formats(args.format)]
 
     with zipfile.ZipFile(zip_path) as zf:
-        if args.add_to_zip and not args.preview and video.name in zf.namelist():
-            print(f"  skipped: the ZIP already contains {video.name}")
-            return
+        if args.add_to_zip and not args.preview:
+            for video in videos[:]:
+                if video.name in zf.namelist():
+                    print(f"  skipped: the ZIP already contains {video.name}")
+                    videos.remove(video)
+            if not videos:
+                return
         obj = pick_obj(zf)
         if obj is None:
             print("  skipped: no .obj model in this ZIP")
@@ -336,20 +352,22 @@ def process(renderer, zip_path, args):
             Image.fromarray(renderer.frame(0)).save(still)
             print(f"  wrote {still}")
             return
-        encode(renderer, video)
+        for video in videos:
+            encode(renderer, video)
+            print(f"  wrote {video} in {time.time() - started:.0f}s")
+            if args.add_to_zip:
+                add_to_zip(zip_path, video)
+                print(f"  added {video.name} to {zip_path.name}")
     finally:
         renderer.unload()
-    print(f"  wrote {video} in {time.time() - started:.0f}s")
-
-    if args.add_to_zip:
-        add_to_zip(zip_path, video)
-        print(f"  added {video.name} to {zip_path.name}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("paths", nargs="+", metavar="ZIP_OR_FOLDER", help="ZIP files, or folders of ZIP files")
     parser.add_argument("--out", metavar="FOLDER", help="write output here instead of next to each ZIP")
+    parser.add_argument("--format", choices=("wmv", "mp4", "both"), default="wmv",
+                        help="video format, default: wmv; both creates WMV and MP4 files")
     parser.add_argument("--preview", action="store_true", help="write one still frame (.png) per ZIP instead of a video")
     parser.add_argument("--add-to-zip", action="store_true", help="add each finished video to the top level of its ZIP")
     args = parser.parse_args()

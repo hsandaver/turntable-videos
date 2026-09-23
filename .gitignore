@@ -9,6 +9,7 @@ node_modules
 outputs/tile11-sample/source/
 outputs/tile11-sample/frames/
 *.wmv
+*.mp4
 outputs/abp-urls/
 ~$*
 /edit.mjs

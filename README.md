@@ -1,6 +1,6 @@
 # Turntable videos
 
-Makes WMV turntable videos of the 3D models in [Pedestal 3D](https://unimelb.pedestal3d.com/) ZIP downloads, for use as ZIP previews in Acquia DAM.
+Makes WMV and MP4 turntable videos of the 3D models in [Pedestal 3D](https://unimelb.pedestal3d.com/) ZIP downloads. Use WMV for ZIP previews in Acquia DAM, MP4 for playback in browsers and QuickTime, or create both.
 
 Each ZIP gets a 15-second, 1920×1080 video of its model making one full turn. The video takes the ZIP's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for a WMV with that name when it builds a ZIP's preview, and the app can put the video inside the ZIP for you.
 
@@ -41,11 +41,11 @@ streamlit run app.py
 It opens in your browser.
 
 1. Upload your ZIP files. The app lists each ZIP with an `.obj` model inside and shows whether it already has a video.
-2. Switch on **Put each video inside its ZIP** if they're going into Acquia DAM.
+2. Choose **WMV**, **MP4**, or **WMV + MP4** under **Video format**. Switch on **Put each video inside its ZIP** to include the selected formats in the ZIP. Choose WMV or both for Acquia DAM.
 3. Tick the ZIPs you want. ZIPs that still need a video are ticked already.
 4. Click **Preview** to see each model from four sides before you render. Check that it's upright and textured.
 5. Click **Make videos**. A progress bar shows how far along it is, and you can cancel.
-6. Download the finished WMVs and, if requested, the ZIPs containing them. Keep the tab open while rendering. Files are temporary and belong to your browser session, so download them before refreshing or leaving the page.
+6. Download the finished videos and, if requested, the ZIPs containing them. Keep the tab open while rendering. Files are temporary and belong to your browser session, so download them before refreshing or leaving the page.
 
 Browsers can't play WMV, and neither can QuickTime. To watch a finished video, use [VLC](https://www.videolan.org/) or, on a Mac, [IINA](https://iina.io/).
 
@@ -58,16 +58,20 @@ To work directly with files on your own computer, set `TURNTABLE_LOCAL_FILES=1` 
 ```bash
 python render.py "Tile 11.zip"                # writes "Tile 11.wmv" next to the ZIP
 python render.py path/to/folder               # every ZIP in the folder
+python render.py --format mp4 path/to/folder   # MP4 files instead of WMV
+python render.py --format both path/to/folder  # WMV and MP4 files
 python render.py --preview path/to/folder     # one still (.png) per ZIP instead of a video
 python render.py --add-to-zip path/to/folder  # also put each video inside its ZIP
 python render.py --out videos path/to/folder  # save the output somewhere else
 ```
 
+WMV is the default. MP4 files also take the ZIP's name, so `Tile 11.zip` gets `Tile 11.mp4`. With `--add-to-zip`, formats already inside the ZIP are skipped individually, so you can add MP4 to a ZIP that already contains WMV.
+
 ## How it works
 
 The script reads the model straight out of the ZIP without unpacking it. If a ZIP holds several OBJ files, as Pedestal 3D downloads often do with low, medium and high detail copies, it renders the largest one that has a material file.
 
-Rendering uses OpenGL through [moderngl](https://github.com/moderngl/moderngl), with no lighting, because the scan textures already have lighting baked in. The model spins around its vertical axis. A model that was saved lying on its side will spin on its side, which is what the preview is for. The frames go straight into ffmpeg, which encodes them as WMV8. [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) ships its own copy of ffmpeg, so you don't need to install it.
+Rendering uses OpenGL through [moderngl](https://github.com/moderngl/moderngl), with no lighting, because the scan textures already have lighting baked in. The model spins around its vertical axis. A model that was saved lying on its side will spin on its side, which is what the preview is for. The frames go straight into ffmpeg, which encodes them as WMV8 or H.264 MP4. MP4 uses the yuv420p pixel format and puts playback metadata at the start of the file. Choosing both formats renders the model once for each format. [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) ships its own copy of ffmpeg, so you don't need to install it.
 
 Videos are written under a temporary name and renamed when finished, so a cancelled or crashed render never leaves a broken video behind. Adding a video to a ZIP works the same way: the app writes a new copy of the ZIP and swaps it in at the end.
 

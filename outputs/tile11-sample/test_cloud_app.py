@@ -75,12 +75,54 @@ class AppTests(unittest.TestCase):
             path.write_bytes(b"test video")
             on_frame(render.FRAMES)
 
+        for choice, formats in (("WMV", ("wmv",)), ("MP4", ("mp4",)),
+                                ("WMV + MP4", ("wmv", "mp4"))):
+            with self.subTest(choice=choice), \
+                    patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "0"}), \
+                    patch("streamlit.file_uploader", return_value=[item]), \
+                    patch.object(render, "Renderer", return_value=renderer), \
+                    patch.object(render, "encode", side_effect=encode):
+                app = self.app().run()
+                self.assertFalse(app.exception)
+                app.selectbox[0].set_value(choice).run()
+                app.toggle[0].set_value(True).run()
+                next(button for button in app.button if button.label == "Make 1 video").click().run()
+                job = app.session_state["work"]["job"]
+                deadline = time.monotonic() + 5
+                while not job.finished and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(job.finished)
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(job.results[0][1], "Done")
+                self.assertEqual(len(app.get("download_button")), len(formats) + 1)
+                self.assertEqual({path.suffix for path in job.downloads},
+                                 {".zip", *(f".{fmt}" for fmt in formats)})
+                with zipfile.ZipFile(job.zips[0]) as archive:
+                    for fmt in formats:
+                        self.assertEqual(archive.read(f"Tile 11.{fmt}"), b"test video")
+                app.run()
+                self.assertEqual(len(app.get("download_button")), len(formats) + 1)
+
+    def test_existing_wmv_does_not_hide_missing_mp4(self):
+        import render
+
+        item = upload()
+        with zipfile.ZipFile(item, "a") as archive:
+            archive.writestr("Tile 11.wmv", b"existing WMV")
+
+        def encode(_renderer, path, on_frame):
+            path.write_bytes(b"new MP4")
+            on_frame(render.FRAMES)
+
         with patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "0"}), \
                 patch("streamlit.file_uploader", return_value=[item]), \
-                patch.object(render, "Renderer", return_value=renderer), \
-                patch.object(render, "encode", side_effect=encode):
+                patch.object(render, "Renderer"), \
+                patch.object(render, "encode", side_effect=encode) as encoder:
             app = self.app().run()
-            self.assertFalse(app.exception)
+            self.assertFalse(any(app.session_state["ticks"].values()))
+            app.selectbox[0].set_value("WMV + MP4").run()
+            self.assertTrue(any(app.session_state["ticks"].values()))
             app.toggle[0].set_value(True).run()
             next(button for button in app.button if button.label == "Make 1 video").click().run()
             job = app.session_state["work"]["job"]
@@ -91,11 +133,13 @@ class AppTests(unittest.TestCase):
             app.run()
             self.assertFalse(app.exception)
             self.assertEqual(job.results[0][1], "Done")
-            self.assertEqual(len(app.get("download_button")), 2)
+            self.assertEqual(encoder.call_count, 1)
+            self.assertEqual(encoder.call_args.args[1].suffix, ".mp4")
             with zipfile.ZipFile(job.zips[0]) as archive:
-                self.assertEqual(archive.read("Tile 11.wmv"), b"test video")
-            app.run()
-            self.assertEqual(len(app.get("download_button")), 2)
+                self.assertEqual(archive.read("Tile 11.wmv"), b"existing WMV")
+                self.assertEqual(archive.read("Tile 11.mp4"), b"new MP4")
+                self.assertEqual(archive.namelist().count("Tile 11.wmv"), 1)
+            self.assertFalse(any(app.session_state["ticks"].values()))
 
     def test_local_file_mode_remains_available_when_enabled(self):
         with patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "1"}):

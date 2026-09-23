@@ -40,12 +40,14 @@ class Job:
     zips: list
     out_dir: Path | None = None
     add_to_zip: bool = False
+    formats: tuple = ("wmv",)
     workspace: UploadWorkspace | None = None  # keep temporary files alive during background work
     downloads: list = field(default_factory=list)
     done: int = 0
     current: str = ""
     stage: str = ""
     frame: int = 0
+    total_frames: int = render.FRAMES
     started: float = field(default_factory=time.time)
     ended: float = 0.0
     results: list = field(default_factory=list)  # (ZIP name, outcome, detail)
@@ -116,36 +118,45 @@ def preview_zip(renderer, zip_path, job):
 def render_zip(renderer, zip_path, job):
     out_dir = job.out_dir or zip_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    video = out_dir / f"{zip_path.stem}.wmv"
+    videos = [out_dir / f"{zip_path.stem}.{fmt}" for fmt in job.formats]
 
     with zipfile.ZipFile(zip_path) as zf:
-        if job.add_to_zip and video.name in zf.namelist():
-            job.results.append((zip_path.name, "Skipped", "The ZIP already contains its video"))
-            return
+        if job.add_to_zip:
+            videos = [video for video in videos if video.name not in zf.namelist()]
+            if not videos:
+                job.results.append((zip_path.name, "Skipped", "The ZIP already contains the selected formats"))
+                return
         obj = render.pick_obj(zf)
         if obj is None:
             job.results.append((zip_path.name, "Skipped", "No .obj model in this ZIP"))
             return
         renderer.load(zf, obj.filename)
 
+    job.total_frames = len(videos) * render.FRAMES
+
     def on_frame(frames_done):
-        job.frame = frames_done
+        job.frame = index * render.FRAMES + frames_done
         if job.cancel.is_set():
             raise Cancelled
 
-    job.stage = "Rendering"
-    render.encode(renderer, video, on_frame)
-
-    saved = f"Ready to download: {video.name}" if job.workspace else (
-        f"Saved {video.name} " + ("next to the ZIP" if job.out_dir is None else f"in {job.out_dir}")
-    )
-    job.downloads.append(video)
-    if job.add_to_zip:
-        job.stage = "Adding the video to the ZIP"
-        render.add_to_zip(zip_path, video)
-        job.downloads.append(zip_path)
-        saved += " and added it to the ZIP"
-    job.results.append((zip_path.name, "Done", saved))
+    details = []
+    for index, video in enumerate(videos):
+        if job.cancel.is_set():
+            raise Cancelled
+        job.stage = f"Rendering {video.suffix[1:].upper()}"
+        render.encode(renderer, video, on_frame)
+        saved = f"Ready to download: {video.name}" if job.workspace else (
+            f"Saved {video.name} " + ("next to the ZIP" if job.out_dir is None else f"in {job.out_dir}")
+        )
+        job.downloads.append(video)
+        if job.add_to_zip:
+            job.stage = "Adding the video to the ZIP"
+            render.add_to_zip(zip_path, video)
+            if zip_path not in job.downloads:
+                job.downloads.append(zip_path)
+            saved += " and added it to the ZIP"
+        details.append(saved)
+    job.results.append((zip_path.name, "Done", "; ".join(details)))
 
 
 def start(job):
@@ -157,26 +168,30 @@ def start(job):
 # Folder scanning
 
 @st.cache_data(show_spinner=False)
-def inspect_zip(path, modified, size):
-    """Return (model filename or None, whether the ZIP already holds its video). `modified` and `size` bust the cache."""
+def inspect_zip(path, modified, size, formats):
+    """Return the model filename and formats inside the ZIP. `modified` and `size` bust the cache."""
     try:
         with zipfile.ZipFile(path) as zf:
             obj = render.pick_obj(zf)
-            return (obj.filename if obj else None), f"{Path(path).stem}.wmv" in zf.namelist()
+            inside = {fmt for fmt in formats if f"{Path(path).stem}.{fmt}" in zf.namelist()}
+            return (obj.filename if obj else None), inside
     except (zipfile.BadZipFile, OSError):
-        return None, False
+        return None, set()
 
 
-def scan(source, out_dir, add_to_zip):
+def scan(source, out_dir, add_to_zip, formats):
     rows, without_model = [], 0
     for zip_path in render.find_zips(source):
         info = zip_path.stat()
-        model, inside = inspect_zip(str(zip_path), info.st_mtime, info.st_size)
+        model, inside = inspect_zip(str(zip_path), info.st_mtime, info.st_size, formats)
         if model is None:
             without_model += 1
             continue
-        saved = ((out_dir or zip_path.parent) / f"{zip_path.stem}.wmv").exists()
-        status = "In ZIP" if inside else "Saved" if saved else "Not made"
+        statuses = {}
+        for fmt in formats:
+            saved = ((out_dir or zip_path.parent) / f"{zip_path.stem}.{fmt}").exists()
+            statuses[fmt] = "In ZIP" if fmt in inside else "Saved" if saved else "Not made"
+        status = ", ".join(f"{fmt.upper()}: {value}" for fmt, value in statuses.items())
         rows.append({
             "path": zip_path,
             "ZIP": zip_path.name,
@@ -184,7 +199,7 @@ def scan(source, out_dir, add_to_zip):
             "Model": model,
             "Size": info.st_size / 1e6,
             "Video": status,
-            "needs_video": not inside if add_to_zip else status == "Not made",
+            "needs_video": any(fmt not in inside for fmt in formats) if add_to_zip else "Not made" in statuses.values(),
         })
     return rows, without_model
 
@@ -232,7 +247,7 @@ with st.sidebar:
     st.header("How it works")
     st.markdown(
         f"""
-Each ZIP gets a {render.FRAMES // render.FPS}-second {render.WIDTH}×{render.HEIGHT} WMV of its model making one full turn.
+Each ZIP gets a {render.FRAMES // render.FPS}-second {render.WIDTH}×{render.HEIGHT} video of its model making one full turn. Choose WMV, MP4, or both.
 
 The video takes the ZIP's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for that name when it builds a preview for a ZIP.
 
@@ -240,12 +255,12 @@ If a ZIP holds several `.obj` files, the app renders the largest one that has a 
 
 For uploads, videos are added to a temporary copy that you can download. In local file mode, putting videos inside ZIPs changes the ZIP files themselves. The app writes a copy and swaps it in at the end, so a cancelled or crashed run can't damage a ZIP.
 
-Browsers can't play WMV. Use **Preview** to check a model before rendering, and VLC or IINA to watch the finished video.
+MP4 works in browsers and QuickTime. To watch WMV, use VLC or IINA. Use **Preview** to check a model before rendering.
 """
     )
 
 st.title(":material/3d_rotation: Turntable videos")
-st.caption("Make WMV turntable videos of the 3D models in Pedestal 3D ZIP downloads, ready for Acquia DAM.")
+st.caption("Make WMV or MP4 turntable videos of the 3D models in Pedestal 3D ZIP downloads.")
 
 input_mode = "Upload ZIP files"
 if LOCAL_FILES:
@@ -302,10 +317,13 @@ add_to_zip = zip_col.toggle(
     disabled=running,
     help="Acquia DAM builds a ZIP's preview from the WMV inside it that has the same name as the ZIP.",
 )
+format_choice = st.selectbox("Video format", ["WMV", "MP4", "WMV + MP4"], disabled=running,
+                             help="Use WMV for Acquia DAM previews. MP4 plays in browsers and QuickTime.")
+formats = render.video_formats("both" if format_choice == "WMV + MP4" else format_choice.lower())
 
 st.divider()
 
-rows, without_model = scan(source, out_dir, add_to_zip) if source else ([], 0)
+rows, without_model = scan(source, out_dir, add_to_zip, formats) if source else ([], 0)
 selected = []
 
 if not source:
@@ -350,7 +368,7 @@ else:
             "Folder": st.column_config.TextColumn("Folder", width="medium"),
             "Model": st.column_config.TextColumn("Model to render", width="medium"),
             "Size": st.column_config.NumberColumn("Size", format="%.1f MB", width="small"),
-            "Video": st.column_config.TextColumn("Video", width="small"),
+            "Video": st.column_config.TextColumn("Video", width="medium"),
         },
     )
     selected = [row["path"] for row, include in zip(rows, edited["Include"]) if include]
@@ -368,7 +386,7 @@ else:
         icon=":material/movie:",
         disabled=running or not selected or (out_dir is not None and not str(out_dir).strip()),
     ):
-        start(Job("render", selected, out_dir=out_dir, add_to_zip=add_to_zip,
+        start(Job("render", selected, out_dir=out_dir, add_to_zip=add_to_zip, formats=formats,
                   workspace=session()["workspace"] if uploading else None))
 
 
@@ -377,7 +395,7 @@ def progress_panel(job):
     if job.finished:
         st.rerun()  # redraw the whole page, which re-enables the controls and updates the statuses
     total = len(job.zips)
-    in_progress = job.frame / render.FRAMES if job.kind == "render" else 0
+    in_progress = job.frame / job.total_frames if job.kind == "render" else 0
     fraction = min((job.done + in_progress) / total, 1.0)
     elapsed = time.time() - job.started
 
@@ -385,8 +403,8 @@ def progress_panel(job):
         verb = "Making video" if job.kind == "render" else "Previewing"
         st.progress(fraction, text=f"**{verb} {min(job.done + 1, total)} of {total}:** {job.current}")
         details = [job.stage or "Starting"]
-        if job.stage == "Rendering":
-            details.append(f"frame {job.frame} of {render.FRAMES}")
+        if job.stage.startswith("Rendering"):
+            details.append(f"frame {job.frame} of {job.total_frames}")
         details.append(f"{duration(elapsed)} elapsed")
         if fraction > 0.02:
             details.append(f"about {duration(elapsed / fraction - elapsed)} left")
@@ -410,7 +428,7 @@ def show_results(job):
         st.error(job.error, icon=":material/error:")
     summary = []
     if job.kind == "render":
-        summary.append(f"{counts['Done']} video{'s' if counts['Done'] != 1 else ''} made")
+        summary.append(f"{counts['Done']} ZIP{'s' if counts['Done'] != 1 else ''} rendered")
     for outcome in ("Skipped", "Cancelled", "Failed"):
         if counts[outcome]:
             summary.append(f"{counts[outcome]} {outcome.lower()}")
@@ -431,7 +449,7 @@ def show_results(job):
 
     if job.workspace and job.downloads:
         for i, path in enumerate(job.downloads):
-            mime = "application/zip" if path.suffix.lower() == ".zip" else "video/x-ms-wmv"
+            mime = {".zip": "application/zip", ".wmv": "video/x-ms-wmv", ".mp4": "video/mp4"}[path.suffix.lower()]
             with path.open("rb") as data:
                 st.download_button(f"Download {path.name}", data, file_name=path.name,
                                    mime=mime, key=f"download-{i}", on_click="ignore")
