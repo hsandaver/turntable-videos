@@ -42,8 +42,7 @@ class ContextTests(unittest.TestCase):
                 archive.writestr("triangle.obj", "v -1 -1 0\nv 1 -1 0\nv 0 1 0\nf 1 2 3\n")
             renderer = render.Renderer()
             try:
-                with zipfile.ZipFile(source) as archive:
-                    self.assertEqual(renderer.load(archive, "triangle.obj"), 1)
+                self.assertEqual(renderer.load(source, "triangle.obj"), 1)
                 frame = renderer.frame(0)
                 self.assertEqual(frame.shape, (108, 192, 3))
                 self.assertTrue((frame != frame[0, 0]).any(), "Preview contains only the background")

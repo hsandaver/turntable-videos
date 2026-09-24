@@ -1,4 +1,4 @@
-"""Keep uploaded ZIPs and their outputs in a temporary workspace for one session."""
+"""Keep uploaded ZIP and GLB files and their outputs in a temporary workspace for one session."""
 import hashlib
 import tempfile
 from pathlib import Path
@@ -13,8 +13,8 @@ class UploadWorkspace:
     def save(self, uploaded):
         # Browsers usually send a basename, but never trust client-provided paths.
         name = Path(uploaded.name.replace("\\", "/")).name
-        if Path(name).suffix.lower() != ".zip":
-            raise ValueError("Please upload ZIP files.")
+        if Path(name).suffix.lower() not in (".zip", ".glb"):
+            raise ValueError("Please upload ZIP or GLB files.")
         data = uploaded.getbuffer()
         key = (name, hashlib.sha256(data).hexdigest())
         if key not in self.paths:

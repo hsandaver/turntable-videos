@@ -1,8 +1,8 @@
 # Turntable videos
 
-Makes WMV and MP4 turntable videos of the 3D models in [Pedestal 3D](https://unimelb.pedestal3d.com/) ZIP downloads. Use WMV for ZIP previews in Acquia DAM, MP4 for playback in browsers and QuickTime, or create both.
+Makes WMV and MP4 turntable videos of the 3D models in [Pedestal 3D](https://unimelb.pedestal3d.com/) ZIP downloads and in GLB files. Use WMV for ZIP previews in Acquia DAM, MP4 for playback in browsers and QuickTime, or create both.
 
-Each ZIP gets a 15-second, 1920×1080 video of its model making one full turn. The video takes the ZIP's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for a WMV with that name when it builds a ZIP's preview, and the app can put the video inside the ZIP for you.
+Each ZIP or GLB file gets a 15-second, 1920×1080 video of its model making one full turn. The video takes the file's name, so `Tile 11.zip` gets `Tile 11.wmv` and `Chair.glb` gets `Chair.wmv`. Acquia DAM looks for a WMV with the ZIP's name when it builds a ZIP's preview, and the app can put the video inside the ZIP for you.
 
 It runs on Windows, macOS and Linux, or on Streamlit Community Cloud. There's a Streamlit app and a command-line script, and both live in `outputs/tile11-sample/`.
 
@@ -40,9 +40,9 @@ streamlit run app.py
 
 It opens in your browser.
 
-1. Upload your ZIP files. The app lists each ZIP with an `.obj` model inside and shows whether it already has a video.
-2. Choose **WMV**, **MP4**, or **WMV + MP4** under **Video format**. Switch on **Put each video inside its ZIP** to include the selected formats in the ZIP. Choose WMV or both for Acquia DAM.
-3. Tick the ZIPs you want. ZIPs that still need a video are ticked already.
+1. Upload your ZIP or GLB files. The app lists each GLB file, and each ZIP with an `.obj` or `.glb` model inside, and shows whether it already has a video.
+2. Choose **WMV**, **MP4**, or **WMV + MP4** under **Video format**. Switch on **Put each video inside its ZIP** to include the selected formats in the ZIP. Choose WMV or both for Acquia DAM. A GLB file uploaded on its own has no ZIP, so its video is always a separate download.
+3. Tick the files you want. Files that still need a video are ticked already.
 4. Open **Adjust model orientation** and choose a model. If it lies on its side, use the **Tilt forward / backward** or **Lean left / right** controls, including the **−90°** and **+90°** buttons, to stand it upright. Use **Starting direction** to choose its first view. Click **Preview this model** after changes to see a looping full turn and four still views. The loop runs faster than the final video. Each model keeps its own adjustments for the current browser session; **Reset orientation** restores the original orientation. The selected models' previews and videos use these same settings.
 5. Click **Make videos**. A progress bar shows how far along it is, and you can cancel.
 6. Download the finished videos and, if requested, the ZIPs containing them. Keep the tab open while rendering. Files are temporary and belong to your browser session, so download them before refreshing or leaving the page.
@@ -53,23 +53,26 @@ To work directly with files on your own computer, set `TURNTABLE_LOCAL_FILES=1` 
 
 ## The command line
 
-`render.py` does the same work without the app. It takes ZIP files, or folders of them:
+`render.py` does the same work without the app. It takes ZIP and GLB files, or folders of them:
 
 ```bash
 python render.py "Tile 11.zip"                # writes "Tile 11.wmv" next to the ZIP
-python render.py path/to/folder               # every ZIP in the folder
+python render.py Chair.glb                    # writes "Chair.wmv" next to the GLB
+python render.py path/to/folder               # every ZIP and GLB file in the folder
 python render.py --format mp4 path/to/folder   # MP4 files instead of WMV
 python render.py --format both path/to/folder  # WMV and MP4 files
-python render.py --preview path/to/folder     # one still (.png) per ZIP instead of a video
+python render.py --preview path/to/folder     # one still (.png) per file instead of a video
 python render.py --add-to-zip path/to/folder  # also put each video inside its ZIP
 python render.py --out videos path/to/folder  # save the output somewhere else
 ```
 
-WMV is the default. MP4 files also take the ZIP's name, so `Tile 11.zip` gets `Tile 11.mp4`. With `--add-to-zip`, formats already inside the ZIP are skipped individually, so you can add MP4 to a ZIP that already contains WMV.
+WMV is the default. MP4 files also take the source file's name, so `Tile 11.zip` gets `Tile 11.mp4`. With `--add-to-zip`, formats already inside the ZIP are skipped individually, so you can add MP4 to a ZIP that already contains WMV. `--add-to-zip` leaves GLB files alone and just saves their videos.
 
 ## How it works
 
-The script reads the model straight out of the ZIP without unpacking it. If a ZIP holds several OBJ files, as Pedestal 3D downloads often do with low, medium and high detail copies, it renders the largest one that has a material file.
+The script reads the model straight out of the ZIP without unpacking it. If a ZIP holds several OBJ files, as Pedestal 3D downloads often do with low, medium and high detail copies, it renders the largest one that has a material file. A ZIP with no textured OBJ file uses its largest GLB file instead.
+
+GLB files use each material's base colour texture, or its flat base colour when there's no texture. Other material maps, such as normal and roughness maps, don't show, because the renderer draws textures as they are without lighting. The script can't read GLB files that need Draco or meshopt compression or KTX2 textures, and it says so instead of rendering them. Export those again without compression to render them.
 
 Rendering uses OpenGL through [moderngl](https://github.com/moderngl/moderngl), with no lighting, because the scan textures already have lighting baked in. The app applies each model's orientation adjustments before spinning it around the vertical axis. Framing fits the whole turn so tilted corners stay visible. The command-line script uses the model's original orientation. The frames go straight into ffmpeg, which encodes them as WMV8 or H.264 MP4. MP4 uses the yuv420p pixel format and puts playback metadata at the start of the file. Choosing both formats renders the model once for each format. [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) ships its own copy of ffmpeg, so you don't need to install it.
 

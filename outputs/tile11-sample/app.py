@@ -1,4 +1,4 @@
-"""Streamlit app for making turntable videos from Pedestal 3D ZIP downloads.
+"""Streamlit app for making turntable videos from Pedestal 3D ZIP downloads and GLB files.
 
     pip install -r requirements.txt
     streamlit run app.py
@@ -27,7 +27,7 @@ from uploads import UploadWorkspace  # noqa: E402
 
 # A hosted hot update can rerun this file with the previous render module still imported.
 # Refresh only an incompatible interface, not on every rerun while jobs are working.
-if getattr(render, "RENDERER_API_VERSION", None) != 1:
+if getattr(render, "RENDERER_API_VERSION", None) != 2:
     importlib.reload(render)
 
 PREVIEW_SIZE = 360  # pixels per view in the preview strips
@@ -44,7 +44,7 @@ class Job:
     """A preview or render run. A background thread fills it in while the page polls it."""
 
     kind: str  # "preview" or "render"
-    zips: list
+    sources: list  # ZIP and GLB file paths
     out_dir: Path | None = None
     add_to_zip: bool = False
     formats: tuple = ("wmv",)
@@ -58,8 +58,8 @@ class Job:
     total_frames: int = render.FRAMES
     started: float = field(default_factory=time.time)
     ended: float = 0.0
-    results: list = field(default_factory=list)  # (ZIP name, outcome, detail)
-    previews: list = field(default_factory=list)  # (ZIP path, model, triangles, JPEG bytes, GIF bytes)
+    results: list = field(default_factory=list)  # (file name, outcome, detail)
+    previews: list = field(default_factory=list)  # (source path, model, triangles, JPEG bytes, GIF bytes)
     error: str = ""
     finished: bool = False
     cancel: threading.Event = field(default_factory=threading.Event)
@@ -84,17 +84,17 @@ def run_job(job):
         job.ended, job.finished = time.time(), True
         return
     try:
-        for zip_path in job.zips:
+        for path in job.sources:
             if job.cancel.is_set():
                 break
-            job.current, job.stage, job.frame = zip_path.name, "Loading model", 0
+            job.current, job.stage, job.frame = path.name, "Loading model", 0
             try:
-                renderer.set_orientation(job.orientations.get(zip_path, (0, 0, 0)))
-                (preview_zip if job.kind == "preview" else render_zip)(renderer, zip_path, job)
+                renderer.set_orientation(job.orientations.get(path, (0, 0, 0)))
+                (preview_source if job.kind == "preview" else render_source)(renderer, path, job)
             except Cancelled:
-                job.results.append((zip_path.name, "Cancelled", "Stopped before the preview or video was finished"))
+                job.results.append((path.name, "Cancelled", "Stopped before the preview or video was finished"))
             except Exception as error:
-                job.results.append((zip_path.name, "Failed", str(error)))
+                job.results.append((path.name, "Failed", str(error)))
             finally:
                 renderer.unload()
                 job.done += 1
@@ -103,13 +103,12 @@ def run_job(job):
         job.ended, job.finished = time.time(), True
 
 
-def preview_zip(renderer, zip_path, job):
-    with zipfile.ZipFile(zip_path) as zf:
-        obj = render.pick_obj(zf)
-        if obj is None:
-            job.results.append((zip_path.name, "Skipped", "No .obj model in this ZIP"))
-            return
-        triangles = renderer.load(zf, obj.filename)
+def preview_source(renderer, path, job):
+    model = render.find_model(path)
+    if model is None:
+        job.results.append((path.name, "Skipped", "No .obj or .glb model in this ZIP"))
+        return
+    triangles = renderer.load(path, model)
 
     job.stage = "Rendering preview"
     job.total_frames = PREVIEW_FRAMES
@@ -130,26 +129,27 @@ def preview_zip(renderer, zip_path, job):
     animation = BytesIO()
     frames[0].save(animation, "GIF", save_all=True, append_images=frames[1:],
                    duration=120, loop=0)
-    job.previews.append((zip_path, obj.filename, triangles, jpeg.getvalue(), animation.getvalue()))
-    job.results.append((zip_path.name, "Previewed", obj.filename))
+    job.previews.append((path, model, triangles, jpeg.getvalue(), animation.getvalue()))
+    job.results.append((path.name, "Previewed", model))
 
 
-def render_zip(renderer, zip_path, job):
-    out_dir = job.out_dir or zip_path.parent
+def render_source(renderer, path, job):
+    out_dir = job.out_dir or path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    videos = [out_dir / f"{zip_path.stem}.{fmt}" for fmt in job.formats]
+    videos = [out_dir / f"{path.stem}.{fmt}" for fmt in job.formats]
+    into_zip = job.add_to_zip and not render.is_glb(path)  # a GLB file on its own has no ZIP to add to
 
-    with zipfile.ZipFile(zip_path) as zf:
-        if job.add_to_zip:
+    if into_zip:
+        with zipfile.ZipFile(path) as zf:
             videos = [video for video in videos if video.name not in zf.namelist()]
-            if not videos:
-                job.results.append((zip_path.name, "Skipped", "The ZIP already contains the selected formats"))
-                return
-        obj = render.pick_obj(zf)
-        if obj is None:
-            job.results.append((zip_path.name, "Skipped", "No .obj model in this ZIP"))
+        if not videos:
+            job.results.append((path.name, "Skipped", "The ZIP already contains the selected formats"))
             return
-        renderer.load(zf, obj.filename)
+    model = render.find_model(path)
+    if model is None:
+        job.results.append((path.name, "Skipped", "No .obj or .glb model in this ZIP"))
+        return
+    renderer.load(path, model)
 
     job.total_frames = len(videos) * render.FRAMES
 
@@ -165,17 +165,17 @@ def render_zip(renderer, zip_path, job):
         job.stage = f"Rendering {video.suffix[1:].upper()}"
         render.encode(renderer, video, on_frame)
         saved = f"Ready to download: {video.name}" if job.workspace else (
-            f"Saved {video.name} " + ("next to the ZIP" if job.out_dir is None else f"in {job.out_dir}")
+            f"Saved {video.name} " + (f"next to {path.name}" if job.out_dir is None else f"in {job.out_dir}")
         )
         job.downloads.append(video)
-        if job.add_to_zip:
+        if into_zip:
             job.stage = "Adding the video to the ZIP"
-            render.add_to_zip(zip_path, video)
-            if zip_path not in job.downloads:
-                job.downloads.append(zip_path)
+            render.add_to_zip(path, video)
+            if path not in job.downloads:
+                job.downloads.append(path)
             saved += " and added it to the ZIP"
         details.append(saved)
-    job.results.append((zip_path.name, "Done", "; ".join(details)))
+    job.results.append((path.name, "Done", "; ".join(details)))
 
 
 def start(job):
@@ -187,38 +187,41 @@ def start(job):
 # Folder scanning
 
 @st.cache_data(show_spinner=False)
-def inspect_zip(path, modified, size, formats):
-    """Return the model filename and formats inside the ZIP. `modified` and `size` bust the cache."""
+def inspect_source(path, modified, size, formats):
+    """Return the model to render and the formats inside the ZIP. `modified` and `size` bust the cache."""
+    if render.is_glb(path):
+        return Path(path).name, set()
     try:
         with zipfile.ZipFile(path) as zf:
-            obj = render.pick_obj(zf)
+            info = render.pick_model(zf)
             inside = {fmt for fmt in formats if f"{Path(path).stem}.{fmt}" in zf.namelist()}
-            return (obj.filename if obj else None), inside
+            return (info.filename if info else None), inside
     except (zipfile.BadZipFile, OSError):
         return None, set()
 
 
 def scan(source, out_dir, add_to_zip, formats):
     rows, without_model = [], 0
-    for zip_path in render.find_zips(source):
-        info = zip_path.stat()
-        model, inside = inspect_zip(str(zip_path), info.st_mtime, info.st_size, formats)
+    for path in render.find_sources(source):
+        info = path.stat()
+        model, inside = inspect_source(str(path), info.st_mtime, info.st_size, formats)
         if model is None:
             without_model += 1
             continue
         statuses = {}
         for fmt in formats:
-            saved = ((out_dir or zip_path.parent) / f"{zip_path.stem}.{fmt}").exists()
+            saved = ((out_dir or path.parent) / f"{path.stem}.{fmt}").exists()
             statuses[fmt] = "In ZIP" if fmt in inside else "Saved" if saved else "Not made"
         status = ", ".join(f"{fmt.upper()}: {value}" for fmt, value in statuses.items())
+        into_zip = add_to_zip and not render.is_glb(path)
         rows.append({
-            "path": zip_path,
-            "ZIP": zip_path.name,
-            "Folder": str(zip_path.parent),
+            "path": path,
+            "File": path.name,
+            "Folder": str(path.parent),
             "Model": model,
             "Size": info.st_size / 1e6,
             "Video": status,
-            "needs_video": any(fmt not in inside for fmt in formats) if add_to_zip else "Not made" in statuses.values(),
+            "needs_video": any(fmt not in inside for fmt in formats) if into_zip else "Not made" in statuses.values(),
         })
     return rows, without_model
 
@@ -238,7 +241,7 @@ def choose(kind):
     start = start_dir(st.session_state.source)
     try:
         if kind == "files":
-            picked = file_dialog.choose_zip_files(start)
+            picked = file_dialog.choose_files(start)
         else:
             folder = file_dialog.choose_folder(start)
             picked = [folder] if folder else []
@@ -309,11 +312,13 @@ with st.sidebar:
     st.header("How it works")
     st.markdown(
         f"""
-Each ZIP gets a {render.FRAMES // render.FPS}-second {render.WIDTH}×{render.HEIGHT} video of its model making one full turn. Choose WMV, MP4, or both.
+Each ZIP or GLB file gets a {render.FRAMES // render.FPS}-second {render.WIDTH}×{render.HEIGHT} video of its model making one full turn. Choose WMV, MP4, or both.
 
-The video takes the ZIP's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for that name when it builds a preview for a ZIP.
+The video takes the file's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for that name when it builds a preview for a ZIP.
 
-If a ZIP holds several `.obj` files, the app renders the largest one that has a material file. That's usually the high-detail copy.
+If a ZIP holds several `.obj` files, the app renders the largest one that has a material file. That's usually the high-detail copy. A ZIP with no textured `.obj` uses its largest `.glb` file instead.
+
+A GLB file uploaded on its own has no ZIP, so its video stays a separate download.
 
 For uploads, videos are added to a temporary copy that you can download. In local file mode, putting videos inside ZIPs changes the ZIP files themselves. The app writes a copy and swaps it in at the end, so a cancelled or crashed run can't damage a ZIP.
 
@@ -322,15 +327,16 @@ MP4 works in browsers and QuickTime. To watch WMV, use VLC or IINA. Use **Previe
     )
 
 st.title(":material/3d_rotation: Turntable videos")
-st.caption("Make WMV or MP4 turntable videos of the 3D models in Pedestal 3D ZIP downloads.")
+st.caption("Make WMV or MP4 turntable videos of the 3D models in Pedestal 3D ZIP downloads and GLB files.")
 
-input_mode = "Upload ZIP files"
+input_mode = "Upload files"
 if LOCAL_FILES:
-    input_mode = st.radio("ZIP source", ["Upload ZIP files", "Local files"], horizontal=True, disabled=running)
-uploading = input_mode == "Upload ZIP files"
+    input_mode = st.radio("Model source", ["Upload files", "Local files"], horizontal=True, disabled=running)
+uploading = input_mode == "Upload files"
 out_dir = None
 if uploading:
-    uploaded = st.file_uploader("Upload ZIP files", type=["zip"], accept_multiple_files=True, disabled=running)
+    uploaded = st.file_uploader("Upload ZIP or GLB files", type=["zip", "glb"], accept_multiple_files=True,
+                                disabled=running)
     source = list(dict.fromkeys(session()["workspace"].save(item) for item in uploaded))
     st.caption("Download the finished videos and updated ZIPs below. Keep this tab open while rendering and download your files before leaving.")
     zip_col = st.container()
@@ -339,13 +345,13 @@ else:
         downloads = Path.home() / "Downloads"
         st.session_state.source = [downloads if downloads.is_dir() else Path.home()]
 
-    st.markdown("**ZIP files**")
+    st.markdown("**ZIP and GLB files**")
     source_bar = st.container(horizontal=True, vertical_alignment="center")
-    source_bar.button("Choose ZIP files…", icon=":material/folder_zip:", on_click=choose, args=("files",), disabled=running)
+    source_bar.button("Choose files…", icon=":material/folder_zip:", on_click=choose, args=("files",), disabled=running)
     source_bar.button("Choose a folder…", icon=":material/folder_open:", on_click=choose, args=("folder",), disabled=running)
     with source_bar.popover("Type a path", icon=":material/keyboard:", disabled=running):
         st.text_input(
-            "Folder or ZIP file",
+            "Folder, ZIP or GLB file",
             key="typed_path",
             placeholder=str(Path.home() / "Downloads"),
             on_change=use_typed_path,
@@ -354,22 +360,22 @@ else:
     source_bar.button("Refresh", icon=":material/refresh:", type="tertiary", disabled=running)
 
     if error := st.session_state.pop("dialog_error", None):
-        st.error(f"Couldn't open a file dialog ({error}). Use **Upload ZIP files** instead.", icon=":material/error:")
+        st.error(f"Couldn't open a file dialog ({error}). Use **Upload files** instead.", icon=":material/error:")
 
     source = st.session_state.source
     missing = [path for path in source if not path.exists()]
     source = [path for path in source if path.exists()]
     if len(source) == 1 and source[0].is_dir():
-        st.markdown(f":material/folder: Every ZIP in `{source[0]}`")
+        st.markdown(f":material/folder: Every ZIP and GLB file in `{source[0]}`")
     elif len(source) == 1:
         st.markdown(f":material/folder_zip: `{source[0]}`")
     elif source:
-        st.markdown(f":material/folder_zip: {len(source)} ZIP files you chose")
+        st.markdown(f":material/folder_zip: {len(source)} files you chose")
     for path in missing:
         st.warning(f"Can't find {path}", icon=":material/folder_off:")
 
     where_col, out_col, zip_col = st.columns([2, 3, 2], vertical_alignment="bottom")
-    where = where_col.radio("Save videos", ["Next to each ZIP", "In another folder"], horizontal=True, disabled=running)
+    where = where_col.radio("Save videos", ["Next to each file", "In another folder"], horizontal=True, disabled=running)
     out_dir = None
     if where == "In another folder":
         default_out = start_dir(source) / "Turntable videos" if source else Path.home() / "Turntable videos"
@@ -377,7 +383,8 @@ else:
 add_to_zip = zip_col.toggle(
     "Put each video inside its ZIP",
     disabled=running,
-    help="Acquia DAM builds a ZIP's preview from the WMV inside it that has the same name as the ZIP.",
+    help="Acquia DAM builds a ZIP's preview from the WMV inside it that has the same name as the ZIP. "
+         "GLB files on their own have no ZIP, so their videos stay separate.",
 )
 format_choice = st.selectbox("Video format", ["WMV", "MP4", "WMV + MP4"], disabled=running,
                              help="Use WMV for Acquia DAM previews. MP4 plays in browsers and QuickTime.")
@@ -389,9 +396,9 @@ rows, without_model = scan(source, out_dir, add_to_zip, formats) if source else 
 selected = []
 
 if not source:
-    st.info("Upload some ZIP files to get started." if uploading else "Choose some ZIP files or a folder to get started.", icon=":material/folder_zip:")
+    st.info("Upload some ZIP or GLB files to get started." if uploading else "Choose some ZIP or GLB files, or a folder, to get started.", icon=":material/folder_zip:")
 elif not rows:
-    st.info("None of these ZIP files has an .obj model inside.", icon=":material/inventory_2:")
+    st.info("None of these ZIP files has an .obj or .glb model inside.", icon=":material/inventory_2:")
 else:
     # Reset the ticks whenever the list or a status changes, so finished ZIPs drop out of the selection
     signature = tuple((str(row["path"]), row["Video"], row["needs_video"]) for row in rows)
@@ -401,7 +408,7 @@ else:
         st.session_state.table_version = st.session_state.get("table_version", 0) + 1
 
     count_col, need_col, selected_col, pick_col = st.columns([1, 1, 1, 3], vertical_alignment="bottom")
-    count_col.metric("Model ZIPs", len(rows))
+    count_col.metric("Models", len(rows))
     need_col.metric("Need a video", sum(row["needs_video"] for row in rows))
 
     picks = pick_col.container(horizontal=True, horizontal_alignment="right")
@@ -415,7 +422,7 @@ else:
             st.session_state.table_version += 1
 
     # Only show where each ZIP lives when they come from more than one folder
-    columns = ["ZIP", "Folder", "Model", "Size", "Video"] if not uploading and len({row["Folder"] for row in rows}) > 1 else ["ZIP", "Model", "Size", "Video"]
+    columns = ["File", "Folder", "Model", "Size", "Video"] if not uploading and len({row["Folder"] for row in rows}) > 1 else ["File", "Model", "Size", "Video"]
     table = pd.DataFrame(
         [{"Include": st.session_state.ticks.get(str(row["path"]), False), **{k: row[k] for k in columns}} for row in rows]
     )
@@ -426,7 +433,7 @@ else:
         disabled=True if running else columns,
         column_config={
             "Include": st.column_config.CheckboxColumn("", width="small"),
-            "ZIP": st.column_config.TextColumn("ZIP file", width="large"),
+            "File": st.column_config.TextColumn("File", width="large"),
             "Folder": st.column_config.TextColumn("Folder", width="medium"),
             "Model": st.column_config.TextColumn("Model to render", width="medium"),
             "Size": st.column_config.NumberColumn("Size", format="%.1f MB", width="small"),
@@ -436,7 +443,7 @@ else:
     selected = [row["path"] for row, include in zip(rows, edited["Include"]) if include]
     selected_col.metric("Selected", len(selected))
     if without_model:
-        st.caption(f"{without_model} of these ZIP files had no .obj model and aren't listed.")
+        st.caption(f"{without_model} of these ZIP files had no .obj or .glb model and aren't listed.")
 
     orientation_controls(rows, running)
 
@@ -460,7 +467,7 @@ else:
 def progress_panel(job):
     if job.finished:
         st.rerun()  # redraw the whole page, which re-enables the controls and updates the statuses
-    total = len(job.zips)
+    total = len(job.sources)
     in_progress = job.frame / job.total_frames
     fraction = min((job.done + in_progress) / total, 1.0)
     elapsed = time.time() - job.started
@@ -494,7 +501,7 @@ def show_results(job):
         st.error(job.error, icon=":material/error:")
     summary = []
     if job.kind == "render":
-        summary.append(f"{counts['Done']} ZIP{'s' if counts['Done'] != 1 else ''} rendered")
+        summary.append(f"{counts['Done']} model{'s' if counts['Done'] != 1 else ''} rendered")
     for outcome in ("Skipped", "Cancelled", "Failed"):
         if counts[outcome]:
             summary.append(f"{counts[outcome]} {outcome.lower()}")
@@ -509,9 +516,9 @@ def show_results(job):
 
     problems = [result for result in job.results if result[1] in ("Skipped", "Cancelled", "Failed")]
     if job.kind == "render":
-        st.dataframe(pd.DataFrame(job.results, columns=["ZIP file", "Result", "Detail"]), hide_index=True)
+        st.dataframe(pd.DataFrame(job.results, columns=["File", "Result", "Detail"]), hide_index=True)
     elif problems:
-        st.dataframe(pd.DataFrame(problems, columns=["ZIP file", "Result", "Detail"]), hide_index=True)
+        st.dataframe(pd.DataFrame(problems, columns=["File", "Result", "Detail"]), hide_index=True)
 
     if job.workspace and job.downloads:
         for i, path in enumerate(job.downloads):

@@ -17,8 +17,8 @@ class DialogUnavailable(Exception):
     pass
 
 
-def choose_zip_files(start):
-    """Ask for one or more ZIP files. Returns a list of paths, empty if the dialog was cancelled."""
+def choose_files(start):
+    """Ask for one or more ZIP or GLB files. Returns a list of paths, empty if the dialog was cancelled."""
     return [Path(p) for p in _run("files", _existing_dir(start))]
 
 
@@ -51,9 +51,9 @@ on run argv
     set startFolder to POSIX file (item 2 of argv)
     activate
     if item 1 of argv is "files" then
-        set picked to choose file with prompt "Choose ZIP files" of type {"zip"} default location startFolder with multiple selections allowed
+        set picked to choose file with prompt "Choose ZIP or GLB files" of type {"zip", "glb"} default location startFolder with multiple selections allowed
     else
-        set picked to {choose folder with prompt "Choose a folder of ZIP files" default location startFolder}
+        set picked to {choose folder with prompt "Choose a folder of ZIP or GLB files" default location startFolder}
     end if
     set output to ""
     repeat with chosen in picked
@@ -75,14 +75,16 @@ def _applescript(kind, start):
 
 def _zenity(kind, start):
     if kind == "files":
-        return ["zenity", "--file-selection", "--multiple", "--separator=\n", "--title=Choose ZIP files",
-                "--file-filter=ZIP files | *.zip *.ZIP", f"--filename={start}/"]
-    return ["zenity", "--file-selection", "--directory", "--title=Choose a folder of ZIP files", f"--filename={start}/"]
+        return ["zenity", "--file-selection", "--multiple", "--separator=\n", "--title=Choose ZIP or GLB files",
+                "--file-filter=ZIP and GLB files | *.zip *.ZIP *.glb *.GLB", f"--filename={start}/"]
+    return ["zenity", "--file-selection", "--directory", "--title=Choose a folder of ZIP or GLB files",
+            f"--filename={start}/"]
 
 
 def _kdialog(kind, start):
     if kind == "files":
-        return ["kdialog", "--getopenfilename", start, "*.zip *.ZIP|ZIP files", "--multiple", "--separate-output"]
+        return ["kdialog", "--getopenfilename", start, "*.zip *.ZIP *.glb *.GLB|ZIP and GLB files", "--multiple",
+                "--separate-output"]
     return ["kdialog", "--getexistingdirectory", start]
 
 
@@ -104,10 +106,10 @@ root = tkinter.Tk()
 root.withdraw()
 root.attributes("-topmost", True)
 if sys.argv[1] == "files":
-    picked = filedialog.askopenfilenames(parent=root, title="Choose ZIP files", initialdir=sys.argv[2],
-                                         filetypes=[("ZIP files", "*.zip"), ("All files", "*")])
+    picked = filedialog.askopenfilenames(parent=root, title="Choose ZIP or GLB files", initialdir=sys.argv[2],
+                                         filetypes=[("ZIP and GLB files", "*.zip *.glb"), ("All files", "*")])
 else:
-    folder = filedialog.askdirectory(parent=root, title="Choose a folder of ZIP files", initialdir=sys.argv[2])
+    folder = filedialog.askdirectory(parent=root, title="Choose a folder of ZIP or GLB files", initialdir=sys.argv[2])
     picked = [folder] if folder else []
 print("\\n".join(picked))
 """

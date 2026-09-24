@@ -64,7 +64,7 @@ class AppTests(unittest.TestCase):
             first, second = self.app().run(), self.app().run()
         self.assertFalse(first.exception)
         self.assertEqual(len(first.get("file_uploader")), 1)
-        self.assertNotIn("Choose ZIP files…", [button.label for button in first.button])
+        self.assertNotIn("Choose files…", [button.label for button in first.button])
         self.assertIsNot(first.session_state["work"], second.session_state["work"])
 
     def test_uploaded_zip_renders_and_offers_video_and_zip_downloads(self):
@@ -100,7 +100,7 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(len(app.get("download_button")), len(formats) + 1)
                 self.assertEqual({path.suffix for path in job.downloads},
                                  {".zip", *(f".{fmt}" for fmt in formats)})
-                with zipfile.ZipFile(job.zips[0]) as archive:
+                with zipfile.ZipFile(job.sources[0]) as archive:
                     for fmt in formats:
                         self.assertEqual(archive.read(f"Tile 11.{fmt}"), b"test video")
                 app.run()
@@ -137,10 +137,45 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.results[0][1], "Done")
             self.assertEqual(encoder.call_count, 1)
             self.assertEqual(encoder.call_args.args[1].suffix, ".mp4")
-            with zipfile.ZipFile(job.zips[0]) as archive:
+            with zipfile.ZipFile(job.sources[0]) as archive:
                 self.assertEqual(archive.read("Tile 11.wmv"), b"existing WMV")
                 self.assertEqual(archive.read("Tile 11.mp4"), b"new MP4")
                 self.assertEqual(archive.namelist().count("Tile 11.wmv"), 1)
+            self.assertFalse(any(app.session_state["ticks"].values()))
+
+    def test_uploaded_glb_renders_to_a_separate_video_even_with_zip_option_on(self):
+        import render
+        from test_glb import textured_triangles
+
+        item = io.BytesIO(textured_triangles()[0])
+        item.name = "Chair.glb"
+        renderer = MagicMock()
+
+        def encode(_renderer, path, on_frame):
+            path.write_bytes(b"GLB video")
+            on_frame(render.FRAMES)
+
+        with patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "0"}), \
+                patch("streamlit.file_uploader", return_value=[item]), \
+                patch.object(render, "Renderer", return_value=renderer), \
+                patch.object(render, "encode", side_effect=encode):
+            app = self.app().run()
+            self.assertFalse(app.exception)
+            app.toggle[0].set_value(True).run()
+            self.assertTrue(all(app.session_state["ticks"].values()))
+            next(button for button in app.button if button.label == "Make 1 video").click().run()
+            job = app.session_state["work"]["job"]
+            deadline = time.monotonic() + 5
+            while not job.finished and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(job.finished)
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertEqual(job.results[0][:2], ("Chair.glb", "Done"))
+            renderer.load.assert_called_once_with(job.sources[0], "Chair.glb")
+            self.assertEqual([path.name for path in job.downloads], ["Chair.wmv"])
+            self.assertEqual(len(app.get("download_button")), 1)
+            # The saved video counts, so the GLB no longer needs one
             self.assertFalse(any(app.session_state["ticks"].values()))
 
     def test_local_file_mode_remains_available_when_enabled(self):
@@ -148,7 +183,7 @@ class AppTests(unittest.TestCase):
             app = self.app().run()
             app.radio[0].set_value("Local files").run()
         self.assertFalse(app.exception)
-        self.assertIn("Choose ZIP files…", [button.label for button in app.button])
+        self.assertIn("Choose files…", [button.label for button in app.button])
 
     def test_hot_update_refreshes_old_renderer_before_preview(self):
         import render
@@ -168,7 +203,7 @@ class AppTests(unittest.TestCase):
             app = self.app().run()
             self.assertFalse(app.exception)
             self.assertIsNot(render.Renderer, OldRenderer)
-            self.assertEqual(render.RENDERER_API_VERSION, 1)
+            self.assertEqual(render.RENDERER_API_VERSION, 2)
             next(button for button in app.button if button.label == "Preview this model").click().run()
             job = app.session_state["work"]["job"]
             deadline = time.monotonic() + 5
