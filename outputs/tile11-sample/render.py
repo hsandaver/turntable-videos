@@ -37,7 +37,7 @@ import numpy as np
 from PIL import Image
 
 # Bump when app.py needs a new renderer interface, so a hot update can refresh a cached import.
-RENDERER_API_VERSION = 3
+RENDERER_API_VERSION = 4
 
 WIDTH, HEIGHT = 1920, 1080
 FPS = 30
@@ -79,7 +79,8 @@ GLTF_UNREADABLE = {
     "KHR_meshopt_compression": "meshopt compression",
     "KHR_texture_basisu": "KTX2 textures",
 }
-# The GLB texture processor app writes this to asset.generator in every GLB it makes, including brightened ones
+# The GLB texture processor app writes this to asset.generator in every GLB it makes, and its total brightening
+# in stops to asset.extras.brightenStops
 PROCESSOR_GENERATOR = "GLB texture processor"
 
 
@@ -87,17 +88,25 @@ def is_glb(path):
     return str(path).lower().endswith(".glb")
 
 
-def made_by_processor(f):
-    """Say whether the open GLB file `f` came from the GLB texture processor. Reads only the glTF JSON."""
+def processor_stops(f):
+    """Read the GLB texture processor's record from the open GLB file `f`, reading only the glTF JSON.
+
+    Returns None if the processor didn't make the GLB. Otherwise returns how many stops it brightened the textures,
+    which is 0 if it didn't brighten them or made the GLB before it recorded brightening.
+    """
     header = f.read(20)
     if len(header) < 20 or header[:4] != b"glTF" or header[16:20] != b"JSON":
-        return False
+        return None
     try:
         gltf = json.loads(f.read(struct.unpack_from("<I", header, 12)[0]))
     except ValueError:
-        return False
+        return None
     asset = gltf.get("asset") if isinstance(gltf, dict) else None
-    return isinstance(asset, dict) and asset.get("generator") == PROCESSOR_GENERATOR
+    if not isinstance(asset, dict) or asset.get("generator") != PROCESSOR_GENERATOR:
+        return None
+    extras = asset.get("extras")
+    stops = extras.get("brightenStops", 0) if isinstance(extras, dict) else 0
+    return stops if isinstance(stops, (int, float)) and not isinstance(stops, bool) else 0
 
 
 def find_sources(paths):
@@ -134,7 +143,7 @@ def pick_model(zf):
     def rank(info):
         if is_glb(info.filename):
             with zf.open(info) as f:
-                return 3 if made_by_processor(f) else 1
+                return 3 if processor_stops(f) is not None else 1
         with io.TextIOWrapper(zf.open(info), encoding="utf-8", errors="replace") as f:
             for _, line in zip(range(200), f):
                 if line.startswith("mtllib"):
@@ -160,16 +169,18 @@ def find_model(path):
 
 
 def describe_model(path, model):
-    """Return the model's name for display, marking a GLB from the GLB texture processor as processed."""
+    """Return the model's name for display, marking a GLB from the GLB texture processor and its brightening."""
     if not is_glb(model):
         return model
     if is_glb(path):
         with open(path, "rb") as f:
-            processed = made_by_processor(f)
+            stops = processor_stops(f)
     else:
         with zipfile.ZipFile(path) as zf, zf.open(model) as f:
-            processed = made_by_processor(f)
-    return f"{model} (processed)" if processed else model
+            stops = processor_stops(f)
+    if stops is None:
+        return model
+    return f"{model} (processed, {stops:+g} stop{'' if stops == 1 else 's'})" if stops else f"{model} (processed)"
 
 
 def load_mtl(zf, name):

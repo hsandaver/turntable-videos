@@ -162,7 +162,7 @@ class SourceTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(render.find_model(self.zip_with(f"{n}.zip", members)), expected)
 
-    def test_processed_glbs_are_marked(self):
+    def test_processed_glbs_are_marked_with_their_brightening(self):
         processed = textured_triangles(asset=PROCESSED)[0]
         source = self.zip_with("item.zip", {"model.obj": "v 0 0 0\n", "bundle-medium.glb": processed,
                                             "bundle-low.glb": textured_triangles()[0]})
@@ -172,9 +172,14 @@ class SourceTests(unittest.TestCase):
         bare = self.folder / "Chair.glb"
         bare.write_bytes(processed)
         self.assertEqual(render.describe_model(bare, "Chair.glb"), "Chair.glb (processed)")
+        for stops, label in ((2.0, "Chair.glb (processed, +2 stops)"), (1, "Chair.glb (processed, +1 stop)"),
+                             (0.5, "Chair.glb (processed, +0.5 stops)"), (0, "Chair.glb (processed)")):
+            with self.subTest(stops=stops):
+                bare.write_bytes(textured_triangles(asset={**PROCESSED, "extras": {"brightenStops": stops}})[0])
+                self.assertEqual(render.describe_model(bare, "Chair.glb"), label)
         for data in (b"", b"glTF" + bytes(16), processed[:30], b"PK\3\4" + bytes(40)):
             with self.subTest(data=data[:8]):
-                self.assertFalse(render.made_by_processor(io.BytesIO(data)))
+                self.assertIsNone(render.processor_stops(io.BytesIO(data)))
 
     def test_folders_include_glb_files_and_a_glb_is_its_own_model(self):
         for name in ("b.glb", "a.zip", "notes.txt", "C.GLB"):
