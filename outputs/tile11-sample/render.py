@@ -24,6 +24,7 @@ import sys
 import time
 import zipfile
 from ctypes.util import find_library
+from itertools import product
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -213,6 +214,15 @@ def rotation_y(angle):
     return np.array([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]])
 
 
+def orientation_matrix(angles=(0, 0, 0)):
+    """Orient the model before the turntable spins it: X tilt, Z roll, then Y facing, in degrees."""
+    x, y, z = np.radians(angles)
+    cx, sx, cz, sz = np.cos(x), np.sin(x), np.cos(z), np.sin(z)
+    tilt = np.array([[1, 0, 0, 0], [0, cx, -sx, 0], [0, sx, cx, 0], [0, 0, 0, 1]])
+    roll = np.array([[cz, -sz, 0, 0], [sz, cz, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+    return rotation_y(y) @ roll @ tilt
+
+
 def create_context():
     if sys.platform.startswith("linux"):
         # EGL works without a display server. Runtime packages provide the .so.1
@@ -228,20 +238,42 @@ def create_context():
 class Renderer:
     """One OpenGL context, reused for every ZIP in a run."""
 
-    def __init__(self):
+    def __init__(self, width=None, height=None):
+        self.width, self.height = width or WIDTH, height or HEIGHT
+        self.orientation = np.identity(4)
+        self.bounds = None
         self.ctx = create_context()
         self.program = self.ctx.program(vertex_shader=VERTEX_SHADER, fragment_shader=FRAGMENT_SHADER)
         samples = min(4, self.ctx.max_samples)
         self.msaa = self.ctx.framebuffer(
-            color_attachments=[self.ctx.renderbuffer((WIDTH, HEIGHT), 4, samples=samples)],
-            depth_attachment=self.ctx.depth_renderbuffer((WIDTH, HEIGHT), samples=samples),
+            color_attachments=[self.ctx.renderbuffer((self.width, self.height), 4, samples=samples)],
+            depth_attachment=self.ctx.depth_renderbuffer((self.width, self.height), samples=samples),
         )
-        self.resolved = self.ctx.framebuffer(color_attachments=[self.ctx.renderbuffer((WIDTH, HEIGHT), 4)])
-        self.view_proj = orthographic(ORTHO_HALF_HEIGHT, WIDTH / HEIGHT) @ look_at(CAMERA, (0, 0, 0))
+        self.resolved = self.ctx.framebuffer(color_attachments=[self.ctx.renderbuffer((self.width, self.height), 4)])
+        self.view_proj = orthographic(ORTHO_HALF_HEIGHT, self.width / self.height) @ look_at(CAMERA, (0, 0, 0))
         self.parts = []
+
+    def set_orientation(self, angles=(0, 0, 0)):
+        self.orientation = orientation_matrix(angles)
+        self.update_view()
+
+    def update_view(self):
+        # Fit the entire turn, including tilted corners, in the centre preview square.
+        half_height = ORTHO_HALF_HEIGHT
+        if self.bounds is not None:
+            points = self.bounds @ self.orientation[:3, :3].T
+            radius = np.linalg.norm(points[:, [0, 2]], axis=1)
+            elevation = np.arctan2(CAMERA[1], np.hypot(CAMERA[0], CAMERA[2]))
+            vertical = np.abs(points[:, 1] * np.cos(elevation)) + radius * abs(np.sin(elevation))
+            half_height = max(half_height, float(max(radius.max(), vertical.max())) / 0.95)
+        self.view_proj = orthographic(half_height, self.width / self.height) @ look_at(CAMERA, (0, 0, 0))
 
     def load(self, zf, obj_name):
         meshes, materials = load_obj(zf, obj_name)
+        lo = np.min([vertices[:, :3].min(axis=0) for vertices in meshes.values()], axis=0)
+        hi = np.max([vertices[:, :3].max(axis=0) for vertices in meshes.values()], axis=0)
+        self.bounds = np.array(list(product(*zip(lo, hi))))
+        self.update_view()
         for material, vertices in meshes.items():
             buffer = self.ctx.buffer(vertices.tobytes())
             vao = self.ctx.vertex_array(self.program, [(buffer, "3f 2f", "in_position", "in_uv")])
@@ -253,13 +285,14 @@ class Renderer:
             for resource in resources:
                 resource.release()
         self.parts = []
+        self.bounds = None
 
     def release(self):
         self.unload()
         self.ctx.release()
 
     def frame(self, i):
-        mvp = self.view_proj @ rotation_y(i * 2 * np.pi / FRAMES)
+        mvp = self.view_proj @ rotation_y(i * 2 * np.pi / FRAMES) @ self.orientation
         self.program["mvp"].write(mvp.T.astype("f4").tobytes())  # GLSL wants column-major order
         self.msaa.use()
         self.msaa.clear(*BACKGROUND, 1.0)
@@ -269,7 +302,7 @@ class Renderer:
             vao.render()
         self.ctx.copy_framebuffer(self.resolved, self.msaa)
         pixels = np.frombuffer(self.resolved.read(components=3, alignment=1), dtype=np.uint8)
-        return np.ascontiguousarray(pixels.reshape(HEIGHT, WIDTH, 3)[::-1])  # OpenGL rows run bottom to top
+        return np.ascontiguousarray(pixels.reshape(self.height, self.width, 3)[::-1])  # OpenGL rows run bottom to top
 
 
 def encode(renderer, video, on_frame=None):

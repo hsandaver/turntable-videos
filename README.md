@@ -43,7 +43,7 @@ It opens in your browser.
 1. Upload your ZIP files. The app lists each ZIP with an `.obj` model inside and shows whether it already has a video.
 2. Choose **WMV**, **MP4**, or **WMV + MP4** under **Video format**. Switch on **Put each video inside its ZIP** to include the selected formats in the ZIP. Choose WMV or both for Acquia DAM.
 3. Tick the ZIPs you want. ZIPs that still need a video are ticked already.
-4. Click **Preview** to see each model from four sides before you render. Check that it's upright and textured.
+4. Open **Adjust model orientation** and choose a model. If it lies on its side, use the **Tilt forward / backward** or **Lean left / right** controls, including the **−90°** and **+90°** buttons, to stand it upright. Use **Starting direction** to choose its first view. Click **Preview this model** after changes to see a looping full turn and four still views. The loop runs faster than the final video. Each model keeps its own adjustments for the current browser session; **Reset orientation** restores the original orientation. The selected models' previews and videos use these same settings.
 5. Click **Make videos**. A progress bar shows how far along it is, and you can cancel.
 6. Download the finished videos and, if requested, the ZIPs containing them. Keep the tab open while rendering. Files are temporary and belong to your browser session, so download them before refreshing or leaving the page.
 
@@ -71,7 +71,7 @@ WMV is the default. MP4 files also take the ZIP's name, so `Tile 11.zip` gets `T
 
 The script reads the model straight out of the ZIP without unpacking it. If a ZIP holds several OBJ files, as Pedestal 3D downloads often do with low, medium and high detail copies, it renders the largest one that has a material file.
 
-Rendering uses OpenGL through [moderngl](https://github.com/moderngl/moderngl), with no lighting, because the scan textures already have lighting baked in. The model spins around its vertical axis. A model that was saved lying on its side will spin on its side, which is what the preview is for. The frames go straight into ffmpeg, which encodes them as WMV8 or H.264 MP4. MP4 uses the yuv420p pixel format and puts playback metadata at the start of the file. Choosing both formats renders the model once for each format. [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) ships its own copy of ffmpeg, so you don't need to install it.
+Rendering uses OpenGL through [moderngl](https://github.com/moderngl/moderngl), with no lighting, because the scan textures already have lighting baked in. The app applies each model's orientation adjustments before spinning it around the vertical axis. Framing fits the whole turn so tilted corners stay visible. The command-line script uses the model's original orientation. The frames go straight into ffmpeg, which encodes them as WMV8 or H.264 MP4. MP4 uses the yuv420p pixel format and puts playback metadata at the start of the file. Choosing both formats renders the model once for each format. [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) ships its own copy of ffmpeg, so you don't need to install it.
 
 Videos are written under a temporary name and renamed when finished, so a cancelled or crashed render never leaves a broken video behind. Adding a video to a ZIP works the same way: the app writes a new copy of the ZIP and swaps it in at the end.
 

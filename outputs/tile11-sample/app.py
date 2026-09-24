@@ -25,6 +25,7 @@ import render  # noqa: E402
 from uploads import UploadWorkspace  # noqa: E402
 
 PREVIEW_SIZE = 360  # pixels per view in the preview strips
+PREVIEW_FRAMES = 36
 LOCAL_FILES = os.environ.get("TURNTABLE_LOCAL_FILES") == "1"
 
 
@@ -42,6 +43,7 @@ class Job:
     add_to_zip: bool = False
     formats: tuple = ("wmv",)
     workspace: UploadWorkspace | None = None  # keep temporary files alive during background work
+    orientations: dict = field(default_factory=dict)  # Path -> (X tilt, Y facing, Z roll), degrees
     downloads: list = field(default_factory=list)
     done: int = 0
     current: str = ""
@@ -51,7 +53,7 @@ class Job:
     started: float = field(default_factory=time.time)
     ended: float = 0.0
     results: list = field(default_factory=list)  # (ZIP name, outcome, detail)
-    previews: list = field(default_factory=list)  # (ZIP name, model, triangles, JPEG bytes)
+    previews: list = field(default_factory=list)  # (ZIP path, model, triangles, JPEG bytes, GIF bytes)
     error: str = ""
     finished: bool = False
     cancel: threading.Event = field(default_factory=threading.Event)
@@ -60,7 +62,8 @@ class Job:
 def session():
     """Keep jobs and uploads private to this browser session."""
     if "work" not in st.session_state:
-        st.session_state.work = {"job": None, "workspace": UploadWorkspace()}
+        st.session_state.work = {"job": None, "workspace": UploadWorkspace(), "orientations": {}}
+    st.session_state.work.setdefault("orientations", {})
     return st.session_state.work
 
 
@@ -69,7 +72,7 @@ def session():
 def run_job(job):
     try:
         # The OpenGL context has to be created on the thread that uses it
-        renderer = render.Renderer()
+        renderer = render.Renderer(width=640, height=360) if job.kind == "preview" else render.Renderer()
     except Exception as error:
         job.error = f"Could not start OpenGL: {error}"
         job.ended, job.finished = time.time(), True
@@ -80,9 +83,10 @@ def run_job(job):
                 break
             job.current, job.stage, job.frame = zip_path.name, "Loading model", 0
             try:
+                renderer.set_orientation(job.orientations.get(zip_path, (0, 0, 0)))
                 (preview_zip if job.kind == "preview" else render_zip)(renderer, zip_path, job)
             except Cancelled:
-                job.results.append((zip_path.name, "Cancelled", "Stopped before the video was finished"))
+                job.results.append((zip_path.name, "Cancelled", "Stopped before the preview or video was finished"))
             except Exception as error:
                 job.results.append((zip_path.name, "Failed", str(error)))
             finally:
@@ -101,17 +105,26 @@ def preview_zip(renderer, zip_path, job):
             return
         triangles = renderer.load(zf, obj.filename)
 
-    job.stage = "Rendering views"
-    # A model turning in place never leaves the centre square of the frame, so crop to that
-    left = (render.WIDTH - render.HEIGHT) // 2
+    job.stage = "Rendering preview"
+    job.total_frames = PREVIEW_FRAMES
+    frames = []
+    for k in range(PREVIEW_FRAMES):
+        if job.cancel.is_set():
+            raise Cancelled
+        frames.append(Image.fromarray(renderer.frame(k * render.FRAMES / PREVIEW_FRAMES)))
+        job.frame = k + 1
+    left = (renderer.width - renderer.height) // 2
     strip = Image.new("RGB", (PREVIEW_SIZE * 4, PREVIEW_SIZE))
     for k in range(4):
-        view = Image.fromarray(renderer.frame(k * render.FRAMES // 4))
-        view = view.crop((left, 0, left + render.HEIGHT, render.HEIGHT))
+        view = frames[k * PREVIEW_FRAMES // 4]
+        view = view.crop((left, 0, left + renderer.height, renderer.height))
         strip.paste(view.resize((PREVIEW_SIZE, PREVIEW_SIZE), Image.Resampling.LANCZOS), (k * PREVIEW_SIZE, 0))
     jpeg = BytesIO()
     strip.save(jpeg, "JPEG", quality=88)
-    job.previews.append((zip_path.name, obj.filename, triangles, jpeg.getvalue()))
+    animation = BytesIO()
+    frames[0].save(animation, "GIF", save_all=True, append_images=frames[1:],
+                   duration=120, loop=0)
+    job.previews.append((zip_path, obj.filename, triangles, jpeg.getvalue(), animation.getvalue()))
     job.results.append((zip_path.name, "Previewed", obj.filename))
 
 
@@ -234,6 +247,49 @@ def use_typed_path():
     typed = st.session_state.typed_path.strip()
     if typed:
         st.session_state.source = [Path(typed).expanduser()]
+
+
+def adjust_orientation(keys, axis=None, change=0):
+    if axis is None:
+        for key in keys:
+            st.session_state[key] = 0
+    else:
+        value = st.session_state[keys[axis]] + change
+        st.session_state[keys[axis]] = (value + 180) % 360 - 180
+
+
+def orientation_controls(rows, running):
+    """Remember adjustments separately from widget state when the chosen model changes."""
+    with st.expander("Adjust model orientation", expanded=True):
+        st.caption("If a model lies on its side, turn it upright here before it spins. Adjustments apply only to the chosen model and last for this session.")
+        paths = [row["path"] for row in rows]
+        chosen = st.selectbox("Model to adjust", paths, format_func=lambda path: path.name,
+                              disabled=running)
+        saved = session()["orientations"].get(chosen, (0, 0, 0))
+        keys = [f"orientation-{chosen}-{axis}" for axis in range(3)]
+        for key, value in zip(keys, saved):
+            if key not in st.session_state:
+                st.session_state[key] = value
+        columns = st.columns(3)
+        values = []
+        for axis, (column, label, help_text) in enumerate(zip(columns,
+                ("Tilt forward / backward", "Starting direction", "Lean left / right"),
+                ("Rotate around the model's X axis. Try 90° for a model lying flat.",
+                 "Turn around the upright axis to choose the first view of the video.",
+                 "Rotate around the Z axis. Try 90° for a model lying sideways."))):
+            values.append(column.slider(label, -180, 180, step=1, format="%d°", key=keys[axis],
+                                        disabled=running, help=help_text))
+            buttons = column.container(horizontal=True)
+            for amount in (-90, 90):
+                buttons.button(f"{amount:+}°", key=f"turn-{axis}-{amount}", disabled=running,
+                               on_click=adjust_orientation, args=(keys, axis, amount))
+        session()["orientations"][chosen] = tuple(values)
+        actions = st.container(horizontal=True)
+        actions.button("Reset orientation", disabled=running, on_click=adjust_orientation, args=(keys,))
+        if actions.button("Preview this model", icon=":material/visibility:", disabled=running):
+            start(Job("preview", [chosen], orientations=dict(session()["orientations"]),
+                      workspace=session()["workspace"] if uploading else None))
+        st.caption("Click Preview this model after adjusting. The looping preview makes a full turn faster than the finished video.")
 
 
 # Page
@@ -376,10 +432,13 @@ else:
     if without_model:
         st.caption(f"{without_model} of these ZIP files had no .obj model and aren't listed.")
 
+    orientation_controls(rows, running)
+
     actions = st.container(horizontal=True)
     plural = "s" if len(selected) != 1 else ""
     if actions.button(f"Preview {len(selected)} model{plural}", icon=":material/visibility:", disabled=running or not selected):
-        start(Job("preview", selected, workspace=session()["workspace"] if uploading else None))
+        start(Job("preview", selected, orientations=dict(session()["orientations"]),
+                  workspace=session()["workspace"] if uploading else None))
     if actions.button(
         f"Make {len(selected)} video{plural}",
         type="primary",
@@ -387,6 +446,7 @@ else:
         disabled=running or not selected or (out_dir is not None and not str(out_dir).strip()),
     ):
         start(Job("render", selected, out_dir=out_dir, add_to_zip=add_to_zip, formats=formats,
+                  orientations=dict(session()["orientations"]),
                   workspace=session()["workspace"] if uploading else None))
 
 
@@ -395,7 +455,7 @@ def progress_panel(job):
     if job.finished:
         st.rerun()  # redraw the whole page, which re-enables the controls and updates the statuses
     total = len(job.zips)
-    in_progress = job.frame / job.total_frames if job.kind == "render" else 0
+    in_progress = job.frame / job.total_frames
     fraction = min((job.done + in_progress) / total, 1.0)
     elapsed = time.time() - job.started
 
@@ -455,12 +515,17 @@ def show_results(job):
                                    mime=mime, key=f"download-{i}", on_click="ignore")
 
     if job.previews:
-        st.caption("Each model from the front, then turned a quarter at a time. Check that it's upright and textured before making its video.")
-        columns = st.columns(2)
-        for i, (name, model, triangles, image) in enumerate(job.previews):
-            with columns[i % 2].container(border=True):
-                st.markdown(f"**{name}**")
+        st.caption("Check the full turn and the four views before making the video. Both use the orientation shown below.")
+        columns = st.columns(min(2, len(job.previews)))
+        for i, (path, model, triangles, image, animation) in enumerate(job.previews):
+            with columns[i % len(columns)].container(border=True):
+                st.markdown(f"**{path.name}**")
                 st.caption(f"{model} · {triangles:,} triangles")
+                angles = job.orientations.get(path, (0, 0, 0))
+                st.caption(f"Tilt {angles[0]}° · Starting direction {angles[1]}° · Lean {angles[2]}°")
+                if angles != session()["orientations"].get(path, (0, 0, 0)):
+                    st.warning("Orientation changed. Click Preview this model to refresh this preview before rendering.")
+                st.image(animation, width="stretch")
                 st.image(image, width="stretch")
 
 
