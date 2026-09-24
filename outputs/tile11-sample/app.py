@@ -188,8 +188,11 @@ def start(job):
 # Folder scanning
 
 @st.cache_data(show_spinner=False)
-def inspect_source(path, modified, size, formats):
-    """Describe the model to render and list the formats inside the ZIP. `modified` and `size` bust the cache."""
+def inspect_source(path, modified, size, formats, renderer_version):
+    """Describe the model to render and list the formats inside the ZIP.
+
+    `modified`, `size` and `renderer_version` bust the cache, so a hosted update doesn't reuse results from earlier code.
+    """
     try:
         if render.is_glb(path):
             return render.describe_model(path, Path(path).name), set()
@@ -205,7 +208,7 @@ def scan(source, out_dir, add_to_zip, formats):
     rows, without_model = [], 0
     for path in render.find_sources(source):
         info = path.stat()
-        model, inside = inspect_source(str(path), info.st_mtime, info.st_size, formats)
+        model, inside = inspect_source(str(path), info.st_mtime, info.st_size, formats, render.RENDERER_API_VERSION)
         if model is None:
             without_model += 1
             continue
