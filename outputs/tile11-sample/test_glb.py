@@ -16,6 +16,7 @@ import render
 from uploads import UploadWorkspace
 
 TRIANGLE = np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0)], dtype="<f4")
+PROCESSED = {"version": "2.0", "generator": render.PROCESSOR_GENERATOR}
 
 
 def png(size=(2, 1), colour=(255, 0, 0)):
@@ -144,10 +145,14 @@ class SourceTests(unittest.TestCase):
                 archive.writestr(member, data)
         return path
 
-    def test_zip_prefers_textured_obj_then_glb_then_bare_obj(self):
+    def test_zip_prefers_processed_glb_then_textured_obj_then_glb_then_bare_obj(self):
         obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
         glb = textured_triangles()[0]
+        processed = textured_triangles(asset=PROCESSED)[0]
         cases = (
+            # A Pedestal 3D ZIP after the GLB texture processor replaced bundle-medium.glb with a brightened copy
+            ({"model.obj": "mtllib model.mtl\n" + obj * 200, "model.mtl": "newmtl a\n",
+              "bundle-high.glb": glb + bytes(5000), "bundle-medium.glb": processed}, "bundle-medium.glb"),
             ({"small.obj": "mtllib small.mtl\n" + obj, "small.mtl": "newmtl a\n", "model.glb": glb}, "small.obj"),
             ({"large.obj": obj * 200, "model.glb": glb, "__MACOSX/._other.glb": glb}, "model.glb"),
             ({"only.obj": obj}, "only.obj"),
@@ -156,6 +161,20 @@ class SourceTests(unittest.TestCase):
         for n, (members, expected) in enumerate(cases):
             with self.subTest(expected=expected):
                 self.assertEqual(render.find_model(self.zip_with(f"{n}.zip", members)), expected)
+
+    def test_processed_glbs_are_marked(self):
+        processed = textured_triangles(asset=PROCESSED)[0]
+        source = self.zip_with("item.zip", {"model.obj": "v 0 0 0\n", "bundle-medium.glb": processed,
+                                            "bundle-low.glb": textured_triangles()[0]})
+        self.assertEqual(render.describe_model(source, "bundle-medium.glb"), "bundle-medium.glb (processed)")
+        self.assertEqual(render.describe_model(source, "bundle-low.glb"), "bundle-low.glb")
+        self.assertEqual(render.describe_model(source, "model.obj"), "model.obj")
+        bare = self.folder / "Chair.glb"
+        bare.write_bytes(processed)
+        self.assertEqual(render.describe_model(bare, "Chair.glb"), "Chair.glb (processed)")
+        for data in (b"", b"glTF" + bytes(16), processed[:30], b"PK\3\4" + bytes(40)):
+            with self.subTest(data=data[:8]):
+                self.assertFalse(render.made_by_processor(io.BytesIO(data)))
 
     def test_folders_include_glb_files_and_a_glb_is_its_own_model(self):
         for name in ("b.glb", "a.zip", "notes.txt", "C.GLB"):

@@ -27,7 +27,7 @@ from uploads import UploadWorkspace  # noqa: E402
 
 # A hosted hot update can rerun this file with the previous render module still imported.
 # Refresh only an incompatible interface, not on every rerun while jobs are working.
-if getattr(render, "RENDERER_API_VERSION", None) != 2:
+if getattr(render, "RENDERER_API_VERSION", None) != 3:
     importlib.reload(render)
 
 PREVIEW_SIZE = 360  # pixels per view in the preview strips
@@ -109,6 +109,7 @@ def preview_source(renderer, path, job):
         job.results.append((path.name, "Skipped", "No .obj or .glb model in this ZIP"))
         return
     triangles = renderer.load(path, model)
+    model = render.describe_model(path, model)
 
     job.stage = "Rendering preview"
     job.total_frames = PREVIEW_FRAMES
@@ -188,14 +189,14 @@ def start(job):
 
 @st.cache_data(show_spinner=False)
 def inspect_source(path, modified, size, formats):
-    """Return the model to render and the formats inside the ZIP. `modified` and `size` bust the cache."""
-    if render.is_glb(path):
-        return Path(path).name, set()
+    """Describe the model to render and list the formats inside the ZIP. `modified` and `size` bust the cache."""
     try:
+        if render.is_glb(path):
+            return render.describe_model(path, Path(path).name), set()
         with zipfile.ZipFile(path) as zf:
             info = render.pick_model(zf)
             inside = {fmt for fmt in formats if f"{Path(path).stem}.{fmt}" in zf.namelist()}
-            return (info.filename if info else None), inside
+        return (render.describe_model(path, info.filename) if info else None), inside
     except (zipfile.BadZipFile, OSError):
         return None, set()
 
@@ -316,7 +317,7 @@ Each ZIP or GLB file gets a {render.FRAMES // render.FPS}-second {render.WIDTH}Ã
 
 The video takes the file's name, so `Tile 11.zip` gets `Tile 11.wmv`. Acquia DAM looks for that name when it builds a preview for a ZIP.
 
-If a ZIP holds several `.obj` files, the app renders the largest one that has a material file. That's usually the high-detail copy. A ZIP with no textured `.obj` uses its largest `.glb` file instead.
+If a ZIP holds a `.glb` from the GLB texture processor, such as a brightened copy, the app renders that and marks it *processed* in the list. Otherwise, if a ZIP holds several `.obj` files, the app renders the largest one that has a material file. That's usually the high-detail copy. A ZIP with no textured `.obj` uses its largest `.glb` file instead.
 
 A GLB file uploaded on its own has no ZIP, so its video stays a separate download.
 

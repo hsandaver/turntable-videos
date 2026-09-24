@@ -40,7 +40,7 @@ streamlit run app.py
 
 It opens in your browser.
 
-1. Upload your ZIP or GLB files. The app lists each GLB file, and each ZIP with an `.obj` or `.glb` model inside, and shows whether it already has a video.
+1. Upload your ZIP or GLB files. The app lists each GLB file, and each ZIP with an `.obj` or `.glb` model inside, and shows whether it already has a video. **Model to render** shows which model each ZIP will use, and says *processed* for a GLB from the GLB texture processor.
 2. Choose **WMV**, **MP4**, or **WMV + MP4** under **Video format**. Switch on **Put each video inside its ZIP** to include the selected formats in the ZIP. Choose WMV or both for Acquia DAM. A GLB file uploaded on its own has no ZIP, so its video is always a separate download.
 3. Tick the files you want. Files that still need a video are ticked already.
 4. Open **Adjust model orientation** and choose a model. If it lies on its side, use the **Tilt forward / backward** or **Lean left / right** controls, including the **−90°** and **+90°** buttons, to stand it upright. Use **Starting direction** to choose its first view. Click **Preview this model** after changes to see a looping full turn and four still views. The loop runs faster than the final video. Each model keeps its own adjustments for the current browser session; **Reset orientation** restores the original orientation. The selected models' previews and videos use these same settings.
@@ -71,6 +71,8 @@ WMV is the default. MP4 files also take the source file's name, so `Tile 11.zip`
 ## How it works
 
 The script reads the model straight out of the ZIP without unpacking it. If a ZIP holds several OBJ files, as Pedestal 3D downloads often do with low, medium and high detail copies, it renders the largest one that has a material file. A ZIP with no textured OBJ file uses its largest GLB file instead.
+
+A GLB from the GLB texture processor comes before all of these. The processor writes `GLB texture processor` into each GLB it makes, and when it updates a ZIP it puts its GLB at the original's path, such as `bundle-medium.glb`. The script checks for that mark, so a brightened copy gets rendered instead of the darker OBJ beside it. The app lists that model as `bundle-medium.glb (processed)`. The mark doesn't say how many stops the processor brightened the textures, so any processed GLB counts.
 
 GLB files use each material's base colour texture, or its flat base colour when there's no texture. Other material maps, such as normal and roughness maps, don't show, because the renderer draws textures as they are without lighting. The script can't read GLB files that need Draco or meshopt compression or KTX2 textures, and it says so instead of rendering them. Export those again without compression to render them.
 

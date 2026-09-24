@@ -178,6 +178,37 @@ class AppTests(unittest.TestCase):
             # The saved video counts, so the GLB no longer needs one
             self.assertFalse(any(app.session_state["ticks"].values()))
 
+    def test_zip_with_processed_glb_previews_that_glb_and_says_so(self):
+        import render
+        from test_glb import PROCESSED, textured_triangles
+
+        item = io.BytesIO()
+        with zipfile.ZipFile(item, "w") as archive:
+            archive.writestr("model.obj", "mtllib model.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n" * 100)
+            archive.writestr("model.mtl", "newmtl a\n")
+            archive.writestr("bundle-medium.glb", textured_triangles(asset=PROCESSED)[0])
+        item.name = "item429-processed.zip"
+        renderer = MagicMock(width=640, height=360)
+        renderer.load.return_value = 1
+        renderer.frame.return_value = np.zeros((360, 640, 3), dtype=np.uint8)
+
+        with patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "0"}), \
+                patch("streamlit.file_uploader", return_value=[item]), \
+                patch.object(render, "Renderer", return_value=renderer):
+            app = self.app().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(list(app.dataframe[0].value["Model"]), ["bundle-medium.glb (processed)"])
+            next(button for button in app.button if button.label == "Preview this model").click().run()
+            job = app.session_state["work"]["job"]
+            deadline = time.monotonic() + 5
+            while not job.finished and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(job.finished)
+            app.run()
+            self.assertFalse(app.exception)
+            renderer.load.assert_called_once_with(job.sources[0], "bundle-medium.glb")
+            self.assertEqual(job.previews[0][1], "bundle-medium.glb (processed)")
+
     def test_local_file_mode_remains_available_when_enabled(self):
         with patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "1"}):
             app = self.app().run()
@@ -203,7 +234,7 @@ class AppTests(unittest.TestCase):
             app = self.app().run()
             self.assertFalse(app.exception)
             self.assertIsNot(render.Renderer, OldRenderer)
-            self.assertEqual(render.RENDERER_API_VERSION, 2)
+            self.assertEqual(render.RENDERER_API_VERSION, 3)
             next(button for button in app.button if button.label == "Preview this model").click().run()
             job = app.session_state["work"]["job"]
             deadline = time.monotonic() + 5
