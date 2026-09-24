@@ -32,6 +32,9 @@ import moderngl
 import numpy as np
 from PIL import Image
 
+# Bump when app.py needs a new renderer interface, so a hot update can refresh a cached import.
+RENDERER_API_VERSION = 1
+
 WIDTH, HEIGHT = 1920, 1080
 FPS = 30
 FRAMES = 450  # one full turn over 15 seconds

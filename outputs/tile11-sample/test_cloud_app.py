@@ -150,6 +150,37 @@ class AppTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertIn("Choose ZIP files…", [button.label for button in app.button])
 
+    def test_hot_update_refreshes_old_renderer_before_preview(self):
+        import render
+
+        class OldRenderer:
+            def __init__(self):
+                raise AssertionError("The app used the cached renderer from before the update")
+
+        context = MagicMock()
+        context.max_samples = 4
+        context.framebuffer.return_value.read.return_value = bytes(640 * 360 * 3)
+        with patch.dict(os.environ, {"TURNTABLE_LOCAL_FILES": "0"}), \
+                patch("streamlit.file_uploader", return_value=[upload()]), \
+                patch.object(render, "RENDERER_API_VERSION", None), \
+                patch.object(render, "Renderer", OldRenderer), \
+                patch.object(render.moderngl, "create_standalone_context", return_value=context):
+            app = self.app().run()
+            self.assertFalse(app.exception)
+            self.assertIsNot(render.Renderer, OldRenderer)
+            self.assertEqual(render.RENDERER_API_VERSION, 1)
+            next(button for button in app.button if button.label == "Preview this model").click().run()
+            job = app.session_state["work"]["job"]
+            deadline = time.monotonic() + 5
+            while not job.finished and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(job.finished)
+            self.assertEqual(job.error, "")
+            self.assertEqual(job.results[0][1], "Previewed")
+            self.assertEqual(len(job.previews), 1)
+            app.run()
+            self.assertFalse(app.exception)
+
     def test_orientation_is_per_model_and_preview_and_video_use_same_snapshot(self):
         import render
 

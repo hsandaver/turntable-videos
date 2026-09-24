@@ -5,6 +5,7 @@
 
 The rendering itself lives in render.py, which also works on its own from the command line.
 """
+import importlib
 import os
 import sys
 import threading
@@ -23,6 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import file_dialog  # noqa: E402
 import render  # noqa: E402
 from uploads import UploadWorkspace  # noqa: E402
+
+# A hosted hot update can rerun this file with the previous render module still imported.
+# Refresh only an incompatible interface, not on every rerun while jobs are working.
+if getattr(render, "RENDERER_API_VERSION", None) != 1:
+    importlib.reload(render)
 
 PREVIEW_SIZE = 360  # pixels per view in the preview strips
 PREVIEW_FRAMES = 36
@@ -74,7 +80,7 @@ def run_job(job):
         # The OpenGL context has to be created on the thread that uses it
         renderer = render.Renderer(width=640, height=360) if job.kind == "preview" else render.Renderer()
     except Exception as error:
-        job.error = f"Could not start OpenGL: {error}"
+        job.error = f"Could not start renderer: {error}"
         job.ended, job.finished = time.time(), True
         return
     try:
